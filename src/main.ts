@@ -233,7 +233,6 @@ export default class SynthesisTrayPlugin extends Plugin {
       throw error;
     } finally {
       this.requestController = null;
-      this.refreshViews();
     }
   }
 

@@ -3,6 +3,7 @@ import { buildRequestText } from "../openai/requestBuilder";
 import { cloneTray } from "../state/tray";
 import { Message, TokenBreakdown, TrayItem } from "../state/types";
 import { shouldSendOnEnter } from "./composerKeyboard";
+import { composerPresentation } from "./composerPresentation";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -53,6 +54,7 @@ export class SynthesisView extends ItemView {
       const option = threadSelect.createEl("option", { text: candidate.title, value: candidate.id });
       option.selected = candidate.id === thread.id;
     }
+    threadSelect.disabled = this.streaming;
     threadSelect.onchange = async () => {
       await this.plugin.switchThread(threadSelect.value);
       this.render();
@@ -69,9 +71,10 @@ export class SynthesisView extends ItemView {
     if (this.streaming) this.renderStreamingMessage(this.conversationElement);
 
     const composer = root.createDiv("synthesis-composer");
+    const presentation = composerPresentation(this.streaming, this.draft, Boolean(this.plugin.settings.secretName));
     this.draftElement = composer.createEl("textarea", { cls: "synthesis-draft", attr: { placeholder: "Ask about the selected material…" } });
     this.draftElement.value = this.draft;
-    this.draftElement.disabled = this.streaming;
+    this.draftElement.disabled = presentation.textareaDisabled;
     this.draftElement.oninput = () => {
       this.draft = this.draftElement?.value ?? "";
       this.renderTokenCount();
@@ -83,8 +86,8 @@ export class SynthesisView extends ItemView {
       void this.send();
     };
     const actions = composer.createDiv("synthesis-composer-actions");
-    const send = actions.createEl("button", { text: this.streaming ? "Stop" : "Send", cls: "mod-cta" });
-    send.disabled = !this.streaming && (!this.draft.trim() || !this.plugin.settings.secretName);
+    const send = actions.createEl("button", { text: presentation.sendButtonText, cls: "mod-cta" });
+    send.disabled = presentation.sendButtonDisabled;
     send.onclick = () => this.streaming ? this.plugin.stopRequest() : void this.send();
     this.statusElement = composer.createDiv("synthesis-status");
     this.statusElement.setText(this.plugin.lastError ?? (this.plugin.settings.secretName ? "" : "Select an OpenAI secret in settings."));
@@ -136,6 +139,7 @@ export class SynthesisView extends ItemView {
   }
 
   private async send(): Promise<void> {
+    if (this.streaming) return;
     // Read the live control at invocation time so tray changes and composition order do not matter.
     const draft = (this.draftElement?.value ?? this.draft).trim();
     if (!draft) return;
@@ -157,10 +161,16 @@ export class SynthesisView extends ItemView {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) new Notice(error instanceof Error ? error.message : "Synthesis request failed.");
     } finally {
-      this.streaming = false;
-      this.streamedAssistant = "";
-      this.render();
+      this.finishRequest();
     }
+  }
+
+  private finishRequest(): void {
+    // This is the only terminal transition for success, failure, and abort.
+    // Render after flipping the state so the new textarea is necessarily idle.
+    this.streaming = false;
+    this.streamedAssistant = "";
+    this.render();
   }
 
   private async recall(): Promise<void> {
