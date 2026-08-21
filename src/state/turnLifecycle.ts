@@ -17,3 +17,7 @@ export function afterUnsuccessfulTurn(state: TrayLifecycleState): TrayLifecycleS
 export function recalledPreviousTray(state: TrayLifecycleState): TrayLifecycleState {
   return { activeTray: cloneTray(state.previousTray), previousTray: cloneTray(state.previousTray) };
 }
+
+export function clearedActiveTray(state: TrayLifecycleState): TrayLifecycleState {
+  return { activeTray: [], previousTray: cloneTray(state.previousTray) };
+}

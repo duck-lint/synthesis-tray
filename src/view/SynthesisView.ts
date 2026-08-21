@@ -1,11 +1,12 @@
 import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf } from "obsidian";
 import { buildRequestText } from "../openai/requestBuilder";
-import { cloneTray } from "../state/tray";
+import { cloneTray, presentationTrayItems } from "../state/tray";
 import { Message, TokenBreakdown, TrayItem } from "../state/types";
 import { shouldSendOnEnter } from "./composerKeyboard";
 import { composerPresentation } from "./composerPresentation";
 import { scrollConversationToMessageStart } from "./conversationScroll";
 import { sourceManifestEntries } from "./sourceManifest";
+import { chooseAction, confirmAction, requestText } from "./interactionModal";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -113,12 +114,16 @@ export class SynthesisView extends ItemView {
     const trayPanel = root.createDiv("synthesis-tray-panel");
     const trayHeader = trayPanel.createDiv("synthesis-tray-header");
     trayHeader.createEl("span", { text: "SYNTHESIS TRAY", cls: "synthesis-section-title" });
-    const recall = trayHeader.createEl("button", { text: "Recall previous tray", cls: "mod-muted" });
+    const trayHeaderActions = trayHeader.createDiv("synthesis-tray-header-actions");
+    const recall = trayHeaderActions.createEl("button", { text: "Recall previous tray", cls: "mod-muted" });
     recall.disabled = state.previousTray.length === 0;
     recall.onclick = () => void this.recall();
+    const clear = trayHeaderActions.createEl("button", { text: "Clear tray", cls: "mod-muted" });
+    clear.disabled = state.activeTray.length === 0;
+    clear.onclick = () => void this.clearTray();
     const trayList = trayPanel.createDiv("synthesis-tray-list");
     if (state.activeTray.length === 0) trayList.createDiv({ text: "No manually selected sources.", cls: "synthesis-empty" });
-    state.activeTray.forEach((item, index) => this.renderTrayItem(trayList, item, index));
+    presentationTrayItems(state.activeTray).forEach(({ item, index }) => this.renderTrayItem(trayList, item, index));
 
     this.tokenElement = trayPanel.createDiv("synthesis-token-count");
     this.renderTokenCount();
@@ -156,7 +161,7 @@ export class SynthesisView extends ItemView {
     const thread = this.plugin.state.threads.find((candidate) => candidate.id === this.plugin.state.activeThreadId);
     if (!thread) return;
     const breakdown = this.plugin.tokenBreakdown(thread.id, this.draft);
-    this.tokenElement.setText(`≈ ${breakdown.total.toLocaleString()} tokens  (system ${breakdown.system.toLocaleString()} · conversation ${breakdown.conversation.toLocaleString()} · tray ${breakdown.tray.toLocaleString()} · draft ${breakdown.draft.toLocaleString()})`);
+    this.tokenElement.setText(`≈ ${breakdown.total.toLocaleString()} tokens  (system ${breakdown.system.toLocaleString()} · conversation ${breakdown.conversation.toLocaleString()} · tray ${breakdown.tray.toLocaleString()} · message ${breakdown.draft.toLocaleString()})`);
   }
 
   private async send(): Promise<void> {
@@ -213,8 +218,8 @@ export class SynthesisView extends ItemView {
 
   private async recall(): Promise<void> {
     if (this.plugin.state.activeTray.length > 0) {
-      const answer = window.prompt("Replace the current tray with the previous successful tray? Type REPLACE to confirm.");
-      if (answer !== "REPLACE") return;
+      const replace = await chooseAction(this.app, "Recall previous tray", "Replace the current tray with the previous successful tray?", [{ label: "Cancel", value: false }, { label: "Replace", value: true, cls: "mod-cta" }], false);
+      if (!replace) return;
     }
     await this.plugin.recallPreviousTray();
   }
@@ -222,10 +227,9 @@ export class SynthesisView extends ItemView {
   private async createThread(): Promise<void> {
     let clear = false;
     if (this.plugin.state.activeTray.length > 0) {
-      const answer = window.prompt("A tray is active. Type KEEP, CLEAR, or CANCEL.");
-      if (!answer || answer.toUpperCase() === "CANCEL") return;
-      if (!["KEEP", "CLEAR"].includes(answer.toUpperCase())) return;
-      clear = answer.toUpperCase() === "CLEAR";
+      const choice = await chooseAction(this.app, "New synthesis thread", "An active tray is present. Choose whether to keep or clear it.", [{ label: "Cancel", value: null }, { label: "Keep tray", value: false }, { label: "Clear tray", value: true, cls: "mod-cta" }], null);
+      if (choice === null) return;
+      clear = choice;
     }
     await this.plugin.createThread(clear);
   }
@@ -233,12 +237,18 @@ export class SynthesisView extends ItemView {
   private async renameThread(threadId: string): Promise<void> {
     const thread = this.plugin.state.threads.find((candidate) => candidate.id === threadId);
     if (!thread) return;
-    const title = window.prompt("Thread name", thread.title)?.trim();
+    const title = await requestText(this.app, "Rename thread", "Enter a new thread name.", thread.title);
     if (title) await this.plugin.renameThread(threadId, title);
   }
 
   private async deleteThread(threadId: string): Promise<void> {
-    if (!window.confirm("Delete this thread and its local conversation history?")) return;
+    if (!await confirmAction(this.app, "Delete thread", "Delete this thread and its local conversation history?")) return;
     await this.plugin.deleteThread(threadId);
+  }
+
+  private async clearTray(): Promise<void> {
+    if (this.plugin.state.activeTray.length === 0) return;
+    if (!await confirmAction(this.app, "Clear tray", "Remove all items from the active synthesis tray? Previous tray and conversation history are preserved.")) return;
+    await this.plugin.clearActiveTray();
   }
 }

@@ -4,7 +4,7 @@ import { SynthesisSettingTab } from "./settings";
 import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
 import { addTrayItem, cloneTray, removeTrayItem } from "./state/tray";
-import { afterSuccessfulTurn, recalledPreviousTray } from "./state/turnLifecycle";
+import { afterSuccessfulTurn, clearedActiveTray, recalledPreviousTray } from "./state/turnLifecycle";
 import { Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn } from "./state/types";
 import { newId, nowIso } from "./state/ids";
 import { makeMessage, titleFromFirstMessage } from "./state/thread";
@@ -13,6 +13,7 @@ import { streamResponse } from "./openai/client";
 import { turnUsageFromProvider } from "./openai/usage";
 import { countNextRequest } from "./tokens/tokenizer";
 import { VIEW_TYPE_SYNTHESIS, SynthesisView } from "./view/SynthesisView";
+import { confirmAction } from "./view/interactionModal";
 
 export default class SynthesisTrayPlugin extends Plugin {
   declare settings: PluginSettings;
@@ -167,7 +168,7 @@ export default class SynthesisTrayPlugin extends Plugin {
       .filter((file) => file.path.startsWith(prefix))
       .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
     if (files.length === 0) return void new Notice(`No Markdown notes found beneath "${folder.path || folder.name}".`);
-    if (!window.confirm(`Add ${files.length} Markdown notes from "${folder.path || folder.name}" to synthesis?`)) return;
+    if (!await confirmAction(this.app, "Add folder to synthesis", `Add ${files.length} Markdown notes from "${folder.path || folder.name}" to synthesis?`)) return;
     const items = captureFolderWholeNotes(await Promise.all(files.map(async (file) => ({ path: file.path, extension: file.extension, source: await this.app.vault.read(file) }))));
     await this.addTrayItems(items, `Added ${items.length} Markdown notes from "${folder.path || folder.name}" to synthesis.`);
   }
@@ -195,6 +196,24 @@ export default class SynthesisTrayPlugin extends Plugin {
   async removeTrayItem(id: string): Promise<void> {
     this.state.activeTray = removeTrayItem(this.state.activeTray, id);
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
+    this.refreshViews();
+  }
+
+  async clearActiveTray(): Promise<void> {
+    if (this.state.activeTray.length === 0) return;
+    const previousActiveTray = cloneTray(this.state.activeTray);
+    const previousPreviousTray = cloneTray(this.state.previousTray);
+    const nextTrayState = clearedActiveTray(this.state);
+    this.state.activeTray = nextTrayState.activeTray;
+    this.state.previousTray = nextTrayState.previousTray;
+    try {
+      await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
+    } catch (error) {
+      this.state.activeTray = previousActiveTray;
+      this.state.previousTray = previousPreviousTray;
+      throw error;
+    }
+    new Notice("Active synthesis tray cleared.");
     this.refreshViews();
   }
 

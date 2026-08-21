@@ -135,6 +135,13 @@
   margin-bottom: var(--size-2-2);
 }
 
+.synthesis-tray-header-actions,
+.synthesis-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+}
+
 .synthesis-tray-list {
   display: flex;
   flex-direction: column;

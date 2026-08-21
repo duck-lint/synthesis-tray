@@ -18,3 +18,8 @@ export function removeTrayItem(tray: TrayItem[], id: string): TrayItem[] {
 export function cloneTray(tray: TrayItem[]): TrayItem[] {
   return tray.map((item) => ({ ...item, headingPath: item.headingPath ? [...item.headingPath] : null }));
 }
+
+/** Presentation-only order: newest items first while retaining canonical indices. */
+export function presentationTrayItems(tray: TrayItem[]): Array<{ item: TrayItem; index: number }> {
+  return tray.map((item, index) => ({ item, index })).reverse();
+}
