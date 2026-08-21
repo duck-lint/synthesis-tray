@@ -1,5 +1,5 @@
-import { Editor, MarkdownView, Menu, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
-import { captureHeading, captureSelection, captureWholeNote, offsetAtPosition } from "./capture/capture";
+import { Editor, MarkdownView, Menu, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf } from "obsidian";
+import { captureFolderWholeNotes, captureHeading, captureSelection, captureWholeNote, offsetAtPosition } from "./capture/capture";
 import { SynthesisSettingTab } from "./settings";
 import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
@@ -25,19 +25,23 @@ export default class SynthesisTrayPlugin extends Plugin {
     this.settings = mergeSettings(await this.loadData());
     // The adapter path distinguishes two vaults that happen to share a display name.
     const adapterWithPath = this.app.vault.adapter as { getBasePath?: () => string };
-    const vaultNamespace = `${this.app.vault.getName()}:${adapterWithPath.getBasePath?.() ?? this.app.vault.getName()}`;
-    this.database = new SynthesisDatabase(vaultNamespace);
+    // Keep the persisted location vault-relative and predictable for backup/tools.
+    const pluginDirectory = `.obsidian/plugins/${this.manifest.id}`;
+    const databasePath = `${pluginDirectory}/conversations.sqlite3`;
+    const wasmPath = adapterWithPath.getBasePath ? `${adapterWithPath.getBasePath()}/${pluginDirectory}/sql-wasm.wasm` : `${pluginDirectory}/sql-wasm.wasm`;
+    this.database = new SynthesisDatabase(this.app.vault.adapter, databasePath, wasmPath);
     this.initialization = this.initialize();
     await this.initialization;
     this.registerView(VIEW_TYPE_SYNTHESIS, (leaf) => new SynthesisView(leaf, this));
     this.addSettingTab(new SynthesisSettingTab(this.app, this));
     this.addCommands();
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor, view) => this.addEditorMenu(menu, editor, view as MarkdownView)));
-    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.addFileMenu(menu, file as TFile)));
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.addFileMenu(menu, file as TAbstractFile)));
   }
 
   override async onunload(): Promise<void> {
     this.stopRequest();
+    await this.database?.close();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_SYNTHESIS);
   }
 
@@ -80,8 +84,12 @@ export default class SynthesisTrayPlugin extends Plugin {
     menu.addItem((item) => item.setTitle("Add note to synthesis").setIcon("file-plus").onClick(() => void this.addNote(view.file!, editor.getValue())));
   }
 
-  private addFileMenu(menu: Menu, file: TFile): void {
-    if (file?.extension !== "md") return;
+  private addFileMenu(menu: Menu, file: TAbstractFile): void {
+    if (file instanceof TFolder) {
+      menu.addItem((item) => item.setTitle("Add folder to synthesis").setIcon("folder-plus").onClick(() => void this.addFolder(file)));
+      return;
+    }
+    if (!(file instanceof TFile) || file.extension !== "md") return;
     menu.addItem((item) => item.setTitle("Add note to synthesis").setIcon("file-plus").onClick(() => void this.addNote(file)));
   }
 
@@ -131,12 +139,34 @@ export default class SynthesisTrayPlugin extends Plugin {
     await this.addTray(captureWholeNote(file.path, source));
   }
 
+  private async addFolder(folder: TFolder): Promise<void> {
+    const prefix = folder.path ? `${folder.path}/` : "";
+    const files = this.app.vault.getMarkdownFiles()
+      .filter((file) => file.path.startsWith(prefix))
+      .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    if (files.length === 0) return void new Notice(`No Markdown notes found beneath "${folder.path || folder.name}".`);
+    if (!window.confirm(`Add ${files.length} Markdown notes from "${folder.path || folder.name}" to synthesis?`)) return;
+    const items = captureFolderWholeNotes(await Promise.all(files.map(async (file) => ({ path: file.path, extension: file.extension, source: await this.app.vault.read(file) }))));
+    await this.addTrayItems(items, `Added ${items.length} Markdown notes from "${folder.path || folder.name}" to synthesis.`);
+  }
+
   private async addTray(item: TrayItem): Promise<void> {
-    const result = addTrayItem(this.state.activeTray, item);
-    if (result.duplicate) return void new Notice("That exact snapshot is already in the synthesis tray.");
-    this.state.activeTray = result.tray;
+    await this.addTrayItems([item], `Added S${this.state.activeTray.length + 1}: ${item.sourcePath}`);
+  }
+
+  private async addTrayItems(items: TrayItem[], successNotice: string): Promise<void> {
+    let nextTray = this.state.activeTray;
+    let added = 0;
+    for (const item of items) {
+      const result = addTrayItem(nextTray, item);
+      if (result.duplicate) continue;
+      nextTray = result.tray;
+      added += 1;
+    }
+    if (added === 0) return void new Notice("That exact snapshot is already in the synthesis tray.");
+    this.state.activeTray = nextTray;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
-    new Notice(`Added S${this.state.activeTray.length}: ${item.sourcePath}`);
+    new Notice(successNotice);
     this.refreshViews();
   }
 
@@ -155,6 +185,7 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   async send(draft: string, onDelta: (delta: string) => void): Promise<void> {
     await this.ready();
+    if (!draft.trim()) return;
     if (!this.settings.secretName) throw new Error("Select an OpenAI secret in the plugin settings before sending.");
     if (!this.settings.model.trim()) throw new Error("Enter an OpenAI model name in the plugin settings.");
     const secret = await this.app.secretStorage.getSecret(this.settings.secretName);

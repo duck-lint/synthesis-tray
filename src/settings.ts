@@ -52,6 +52,16 @@ export class SynthesisSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }
         }));
+
+    new Setting(containerEl)
+      .setName("Prompt caching")
+      .setDesc("Allow OpenAI to cache stable request prefixes. The system prompt remains in every request.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.promptCachingEnabled)
+        .onChange(async (value) => {
+          this.plugin.settings.promptCachingEnabled = value;
+          await this.plugin.saveSettings();
+        }));
   }
 }
 

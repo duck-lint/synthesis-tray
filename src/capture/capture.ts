@@ -57,3 +57,18 @@ export function captureWholeNote(sourcePath: string, source: string): TrayItem {
     addedAt: nowIso(),
   };
 }
+
+export interface FolderCaptureFile {
+  path: string;
+  extension: string;
+  source: string;
+}
+
+/** Sorts before capture so folder actions have stable source ordering and IDs. */
+export function captureFolderWholeNotes(files: FolderCaptureFile[]): TrayItem[] {
+  return files
+    .filter((file) => file.extension.toLowerCase() === "md")
+    .slice()
+    .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+    .map((file) => captureWholeNote(file.path, file.source));
+}

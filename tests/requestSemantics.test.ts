@@ -3,7 +3,7 @@ import { buildRequestText, buildResponsesRequest } from "../src/openai/requestBu
 import { serializeTray } from "../src/openai/sourceSerializer";
 import { Message, PluginSettings, TrayItem } from "../src/state/types";
 
-const settings: PluginSettings = { secretName: "openai-main", model: "custom-model", systemPrompt: "synth", maxOutputTokens: 123 };
+const settings: PluginSettings = { secretName: "openai-main", model: "custom-model", systemPrompt: "synth", maxOutputTokens: 123, promptCachingEnabled: false };
 const source = (path: string, content: string): TrayItem => ({ id: path, sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: "now" });
 const message = (role: Message["role"], content: string): Message => ({ id: content, threadId: "thread", turnId: "turn", role, content, createdAt: "now" });
 
@@ -42,5 +42,35 @@ describe("explicit request context", () => {
     expect(first.input.at(-1)?.content).toContain("OLD A");
     expect(second.input.at(-1)?.content).toContain("NEW B");
     expect(second.input.at(-1)?.content).not.toContain("OLD A");
+  });
+
+  it("builds equivalent requests regardless of whether tray or message state was populated first", () => {
+    const prior = [message("user", "Earlier"), message("assistant", "Earlier answer")];
+    const buildAfter = (order: "message-first" | "tray-first") => {
+      let currentTray: TrayItem[] = [];
+      let currentDraft = "";
+      if (order === "message-first") currentDraft = "Compare these.";
+      currentTray = [source("a.md", "A"), source("b.md", "B")];
+      if (order === "tray-first") currentDraft = "Compare these.";
+      return buildResponsesRequest({ ...settings, model: "gpt-5.6" }, prior, currentTray, currentDraft);
+    };
+    const first = buildAfter("message-first");
+    const second = buildAfter("tray-first");
+    expect(second).toEqual(first);
+    expect(first.instructions).toBe("synth");
+    expect(first.input.at(-1)?.content).toContain("USER MESSAGE:\n\nCompare these.");
+  });
+
+  it("keeps instructions in every request while enabling or disabling cache metadata", () => {
+    const cached = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, [], [], "One");
+    const ordinary = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: false }, [], [], "One");
+    expect(cached.instructions).toBe(ordinary.instructions);
+    expect(cached.input).toEqual(ordinary.input);
+    expect(cached.prompt_cache_key).toBeTruthy();
+    expect(cached.prompt_cache_key).not.toContain("A");
+    expect(cached.prompt_cache_key).not.toContain("openai-main");
+    expect(cached.prompt_cache_options).toEqual({ mode: "implicit", ttl: "30m" });
+    expect(ordinary).not.toHaveProperty("prompt_cache_key");
+    expect(ordinary).not.toHaveProperty("prompt_cache_options");
   });
 });

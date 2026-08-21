@@ -23,3 +23,4 @@ await cp("styles.css", "dist/styles.css");
 if (!production) {
   await writeFile("dist/.hotreload", String(Date.now()), "utf8");
 }
+await cp("node_modules/sql.js/dist/sql-wasm.wasm", "dist/sql-wasm.wasm");

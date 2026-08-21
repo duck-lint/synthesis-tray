@@ -84,6 +84,7 @@ export interface PluginSettings {
   model: string;
   systemPrompt: string;
   maxOutputTokens: number;
+  promptCachingEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -91,4 +92,5 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   model: "gpt-5.6",
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   maxOutputTokens: 4096,
+  promptCachingEnabled: true,
 };

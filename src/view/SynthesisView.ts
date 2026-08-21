@@ -2,6 +2,7 @@ import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf } from "obsidian";
 import { buildRequestText } from "../openai/requestBuilder";
 import { cloneTray } from "../state/tray";
 import { Message, TokenBreakdown, TrayItem } from "../state/types";
+import { shouldSendOnEnter } from "./composerKeyboard";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -75,6 +76,12 @@ export class SynthesisView extends ItemView {
       this.draft = this.draftElement?.value ?? "";
       this.renderTokenCount();
     };
+    this.draftElement.onkeydown = (event) => {
+      const canSend = !this.streaming && Boolean(this.draftElement?.value.trim()) && Boolean(this.plugin.settings.secretName);
+      if (!shouldSendOnEnter(event, canSend)) return;
+      event.preventDefault();
+      void this.send();
+    };
     const actions = composer.createDiv("synthesis-composer-actions");
     const send = actions.createEl("button", { text: this.streaming ? "Stop" : "Send", cls: "mod-cta" });
     send.disabled = !this.streaming && (!this.draft.trim() || !this.plugin.settings.secretName);
@@ -129,7 +136,8 @@ export class SynthesisView extends ItemView {
   }
 
   private async send(): Promise<void> {
-    const draft = this.draft.trim();
+    // Read the live control at invocation time so tray changes and composition order do not matter.
+    const draft = (this.draftElement?.value ?? this.draft).trim();
     if (!draft) return;
     this.streaming = true;
     this.streamedAssistant = "";
