@@ -49,6 +49,17 @@ describe("manual capture and tray", () => {
     expect(captured?.contentSnapshot).toBe("## Child\ntext\n");
   });
 
+  it("does not invent one heading path for a cross-heading selection", () => {
+    const source = "# A\nfirst\n\n# B\nsecond\n";
+    const from = source.indexOf("first");
+    const to = source.indexOf("second") + "second".length;
+    const editor = {
+      getSelection: () => source.slice(from, to),
+      getCursor: (where?: "from" | "to") => where === "to" ? { line: 4, ch: 6 } : { line: 1, ch: 0 },
+    };
+    expect(captureSelection("note.md", source, editor)?.headingPath).toBeNull();
+  });
+
   it("prevents exact duplicates and preserves insertion order", () => {
     const first = item("one", "same");
     const duplicate = item("two", "same");

@@ -25,6 +25,21 @@ function tray(path: string, content: string): TrayItem { return { id: newId("tra
 function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40, usageJson: '{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40}}' }; }
 
 describe("SQLite persistence", () => {
+  it("proves sql.js export during an open transaction includes uncommitted rows", async () => {
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const live = new SQL.Database();
+    live.run("CREATE TABLE export_probe (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    live.run("BEGIN");
+    live.run("INSERT INTO export_probe VALUES (?, ?)", ["uncommitted", "visible in export"]);
+    const exported = live.export();
+    const reopened = new SQL.Database(exported);
+    // The reopened image contains the schema but not the pending row. It is
+    // therefore not a reliable pre-commit image for this persistence design.
+    expect(reopened.exec("SELECT id, value FROM export_probe")[0]?.values ?? []).toEqual([]);
+    reopened.close();
+    live.close();
+  });
+
   it("survives a database instance reload and restores active/previous tray snapshots", async () => {
     const adapter = new MemoryVaultAdapter();
     const current = tray("a.md", "A snapshot");
@@ -119,5 +134,45 @@ describe("SQLite persistence", () => {
     const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "user-no-usage", assistantMessageId: "assistant-no-usage", createdAt: nowIso() };
     await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [], []);
     expect((await db.load()).turnUsage).toEqual([]);
+  });
+
+  it("does not leave a ghost turn after a one-time persistence failure", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `atomic-${newId("test")}`;
+    const db = database(adapter, name);
+    const currentThread = thread();
+    await db.putThread(currentThread);
+    const originalWrite = adapter.writeBinary.bind(adapter);
+    let failNextWrite = true;
+    adapter.writeBinary = async (path: string, data: ArrayBuffer): Promise<void> => {
+      if (failNextWrite && path.endsWith("conversations.sqlite3")) {
+        failNextWrite = false;
+        throw new Error("forced persistence failure");
+      }
+      await originalWrite(path, data);
+    };
+
+    const makeTurn = (turnId: string): { turn: Turn; user: Message; assistant: Message } => {
+      const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: `${turnId}-user`, assistantMessageId: `${turnId}-assistant`, createdAt: nowIso() };
+      return {
+        turn,
+        user: { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: `${turnId} question`, createdAt: nowIso() },
+        assistant: { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: `${turnId} answer`, createdAt: nowIso() },
+      };
+    };
+
+    const first = makeTurn("turn-1");
+    await expect(db.commitTurn(currentThread, first.user, first.assistant, first.turn, [], [])).rejects.toThrow("forced persistence failure");
+    expect((await db.load()).turns.map((turn) => turn.id)).toEqual([]);
+
+    const second = makeTurn("turn-2");
+    await db.commitTurn(currentThread, second.user, second.assistant, second.turn, [], []);
+    const liveState = await db.load();
+    expect(liveState.turns.map((turn) => turn.id)).toEqual(["turn-2"]);
+
+    await db.close();
+    const reopened = await database(adapter, name).load();
+    expect(reopened.turns.map((turn) => turn.id)).toEqual(["turn-2"]);
+    expect(reopened.messages.map((message) => message.turnId)).toEqual(["turn-2", "turn-2"]);
   });
 });

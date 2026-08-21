@@ -32,4 +32,22 @@ describe("Markdown heading regions", () => {
     const source = "```md\n# not a heading\n```\n\n# Actual\ncontent";
     expect(parseMarkdownHeadings(source).map((heading) => heading.text)).toEqual(["Actual"]);
   });
+
+  it("pops a sibling before adding its later child", () => {
+    const headings = parseMarkdownHeadings("# A\n## B\n## C\n### D\n");
+    expect(headings.find((heading) => heading.text === "D")?.path).toEqual(["A", "C", "D"]);
+  });
+
+  it("preserves actual ancestry when heading levels are skipped", () => {
+    const headings = parseMarkdownHeadings("# A\n### C\n#### D\n## B\n#### E\n");
+    expect(headings.find((heading) => heading.text === "C")?.path).toEqual(["A", "C"]);
+    expect(headings.find((heading) => heading.text === "D")?.path).toEqual(["A", "C", "D"]);
+    expect(headings.find((heading) => heading.text === "E")?.path).toEqual(["A", "B", "E"]);
+  });
+
+  it("discards deeper ancestry on an upward sibling transition", () => {
+    const headings = parseMarkdownHeadings("# A\n## B\n### C\n## D\n### E\n");
+    expect(headings.find((heading) => heading.text === "D")?.path).toEqual(["A", "D"]);
+    expect(headings.find((heading) => heading.text === "E")?.path).toEqual(["A", "D", "E"]);
+  });
 });

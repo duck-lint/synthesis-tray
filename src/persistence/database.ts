@@ -57,6 +57,7 @@ function parseTrayRows(rows: Array<Record<string, unknown>>): TrayItem[] {
  */
 export class SynthesisDatabase {
   private db: SqliteDatabase | null = null;
+  private sql: { Database: new (data?: Uint8Array) => SqliteDatabase } | null = null;
   private sqlReady: Promise<{ Database: new (data?: Uint8Array) => SqliteDatabase }> | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -69,13 +70,20 @@ export class SynthesisDatabase {
     const wasmBinary = await this.adapter.readBinary(this.wasmPath);
     this.sqlReady ??= initSqlJs({ wasmBinary }) as unknown as Promise<{ Database: new (data?: Uint8Array) => SqliteDatabase }>;
     const SQL = await this.sqlReady;
+    this.sql = SQL;
     const existing = await this.adapter.exists(this.databasePath);
-    this.db = new SQL.Database(existing ? new Uint8Array(await this.adapter.readBinary(this.databasePath)) : undefined);
-    this.db.run("PRAGMA foreign_keys = ON");
-    this.db.run(SCHEMA);
-    // Persist schema additions on open as well, so an existing database is
-    // upgraded durably without requiring a later conversation mutation.
-    await this.persist();
+    try {
+      this.db = new SQL.Database(existing ? new Uint8Array(await this.adapter.readBinary(this.databasePath)) : undefined);
+      this.db.run("PRAGMA foreign_keys = ON");
+      this.db.run(SCHEMA);
+      // Persist schema additions on open as well, so an existing database is
+      // upgraded durably without requiring a later conversation mutation.
+      await this.persist();
+    } catch (error) {
+      this.db?.close();
+      this.db = null;
+      throw error;
+    }
   }
 
   private requireDb(): SqliteDatabase {
@@ -87,13 +95,28 @@ export class SynthesisDatabase {
     await this.adapter.writeBinary(this.databasePath, writeBinaryValue(this.requireDb().export()));
   }
 
+  private restore(image: Uint8Array): void {
+    if (!this.sql) throw new Error("SQLite engine has not been initialized");
+    const replacement = new this.sql.Database(new Uint8Array(image));
+    replacement.run("PRAGMA foreign_keys = ON");
+    this.db?.close();
+    this.db = replacement;
+  }
+
   private async mutate(operation: (db: SqliteDatabase) => void): Promise<void> {
     const next = this.writeQueue.then(async () => {
       await this.open();
       const db = this.requireDb();
+      // sql.js export() during an open transaction is not a reliable durable
+      // image, so retain the last known-good committed database for recovery.
+      const knownGoodImage = new Uint8Array(db.export());
       db.run("BEGIN");
       try { operation(db); db.run("COMMIT"); await this.persist(); }
-      catch (error) { try { db.run("ROLLBACK"); } catch { /* Preserve the original database error. */ } throw error; }
+      catch (error) {
+        try { db.run("ROLLBACK"); } catch { /* A failed disk write occurs after COMMIT. */ }
+        this.restore(knownGoodImage);
+        throw error;
+      }
     });
     this.writeQueue = next.catch(() => undefined);
     await next;
