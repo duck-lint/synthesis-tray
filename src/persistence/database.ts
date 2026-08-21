@@ -1,7 +1,7 @@
 import initSqlJs from "sql.js";
 import { cloneTray } from "../state/tray";
 import { newId, nowIso } from "../state/ids";
-import { Message, PersistedState, SourceSnapshot, Thread, TrayItem, Turn } from "../state/types";
+import { Message, PersistedState, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage } from "../state/types";
 
 /** The small surface of sql.js used here keeps the persistence boundary testable. */
 interface SqliteDatabase {
@@ -22,6 +22,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_message_id TEXT NOT NULL, assistant_message_id TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS turn_usage (turn_id TEXT PRIMARY KEY, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, cached_input_tokens INTEGER, usage_json TEXT, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS source_snapshots (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, source_index INTEGER NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS tray_items (tray_name TEXT NOT NULL CHECK (tray_name IN ('active', 'previous')), ordinal INTEGER NOT NULL, id TEXT NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (tray_name, id));
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -72,7 +73,9 @@ export class SynthesisDatabase {
     this.db = new SQL.Database(existing ? new Uint8Array(await this.adapter.readBinary(this.databasePath)) : undefined);
     this.db.run("PRAGMA foreign_keys = ON");
     this.db.run(SCHEMA);
-    if (!existing) await this.persist();
+    // Persist schema additions on open as well, so an existing database is
+    // upgraded durably without requiring a later conversation mutation.
+    await this.persist();
   }
 
   private requireDb(): SqliteDatabase {
@@ -104,24 +107,26 @@ export class SynthesisDatabase {
     const turns = rowObjects(db.exec("SELECT id, thread_id, user_message_id, assistant_message_id, created_at FROM turns ORDER BY created_at, id")).map((row) => ({ id: asString(row.id), threadId: asString(row.thread_id), userMessageId: asString(row.user_message_id), assistantMessageId: asString(row.assistant_message_id), createdAt: asString(row.created_at) }));
     const turnOrder = new Map(turns.map((turn, index) => [turn.id, index]));
     const messages = rowObjects(db.exec("SELECT id, thread_id, turn_id, role, content, created_at FROM messages")).map((row) => ({ id: asString(row.id), threadId: asString(row.thread_id), turnId: asString(row.turn_id), role: row.role === "assistant" ? "assistant" as const : "user" as const, content: asString(row.content), createdAt: asString(row.created_at) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || (a.role === "user" ? -1 : 1));
+    const turnUsage = rowObjects(db.exec("SELECT turn_id, input_tokens, output_tokens, total_tokens, cached_input_tokens, usage_json FROM turn_usage ORDER BY turn_id")).map((row): TurnUsage => ({ turnId: asString(row.turn_id), inputTokens: row.input_tokens == null ? null : asNumber(row.input_tokens), outputTokens: row.output_tokens == null ? null : asNumber(row.output_tokens), totalTokens: row.total_tokens == null ? null : asNumber(row.total_tokens), cachedInputTokens: row.cached_input_tokens == null ? null : asNumber(row.cached_input_tokens), usageJson: asNullableString(row.usage_json) }));
     const sourceSnapshots = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot FROM source_snapshots")).map((row) => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
     const trayRows = rowObjects(db.exec("SELECT tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at FROM tray_items ORDER BY tray_name, ordinal"));
     const activeTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "active"));
     const previousTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "previous"));
     const meta = new Map(rowObjects(db.exec("SELECT key, value FROM meta")).map((row) => [asString(row.key), asNullableString(row.value)]));
-    return { threads, messages, turns, sourceSnapshots, activeTray: cloneTray(activeTray), previousTray: cloneTray(previousTray), activeThreadId: meta.get("activeThreadId") ?? null };
+    return { threads, messages, turns, turnUsage, sourceSnapshots, activeTray: cloneTray(activeTray), previousTray: cloneTray(previousTray), activeThreadId: meta.get("activeThreadId") ?? null };
   }
 
   async setMeta(activeTray: TrayItem[], previousTray: TrayItem[], activeThreadId: string | null): Promise<void> {
     await this.mutate((db) => { this.replaceTray(db, "active", activeTray); this.replaceTray(db, "previous", previousTray); this.putMeta(db, "activeThreadId", activeThreadId); });
   }
 
-  async commitTurn(thread: Thread, user: Message, assistant: Message, turn: Turn, sources: SourceSnapshot[], tray: TrayItem[]): Promise<void> {
+  async commitTurn(thread: Thread, user: Message, assistant: Message, turn: Turn, sources: SourceSnapshot[], tray: TrayItem[], usage?: TurnUsage): Promise<void> {
     await this.mutate((db) => {
       db.run("INSERT OR REPLACE INTO threads (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)", [thread.id, thread.title, thread.createdAt, thread.updatedAt]);
       db.run("INSERT INTO messages (id, thread_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)", [user.id, user.threadId, user.turnId, user.role, user.content, user.createdAt]);
       db.run("INSERT INTO messages (id, thread_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)", [assistant.id, assistant.threadId, assistant.turnId, assistant.role, assistant.content, assistant.createdAt]);
       db.run("INSERT INTO turns (id, thread_id, user_message_id, assistant_message_id, created_at) VALUES (?, ?, ?, ?, ?)", [turn.id, turn.threadId, turn.userMessageId, turn.assistantMessageId, turn.createdAt]);
+      if (usage) db.run("INSERT INTO turn_usage (turn_id, input_tokens, output_tokens, total_tokens, cached_input_tokens, usage_json) VALUES (?, ?, ?, ?, ?, ?)", [usage.turnId, usage.inputTokens, usage.outputTokens, usage.totalTokens, usage.cachedInputTokens, usage.usageJson]);
       for (const source of sources) db.run("INSERT INTO source_snapshots (id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)", [source.id, source.turnId, source.sourceIndex, source.sourcePath, source.scope, source.headingPath ? JSON.stringify(source.headingPath) : null, source.contentSnapshot]);
       this.replaceTray(db, "previous", tray); this.replaceTray(db, "active", []);
     });
@@ -131,6 +136,7 @@ export class SynthesisDatabase {
   async deleteThread(threadId: string): Promise<void> {
     await this.mutate((db) => {
       db.run("DELETE FROM source_snapshots WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?)", [threadId]);
+      db.run("DELETE FROM turn_usage WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?)", [threadId]);
       db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
       db.run("DELETE FROM turns WHERE thread_id = ?", [threadId]);
       db.run("DELETE FROM threads WHERE id = ?", [threadId]);

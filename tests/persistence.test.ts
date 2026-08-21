@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SynthesisDatabase } from "../src/persistence/database";
 import { newId, nowIso } from "../src/state/ids";
-import { Message, SourceSnapshot, Thread, TrayItem, Turn } from "../src/state/types";
+import { Message, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage } from "../src/state/types";
 
 class MemoryVaultAdapter {
   readonly files = new Map<string, ArrayBuffer>();
@@ -22,6 +22,7 @@ const wasmPath = resolve("node_modules/sql.js/dist/sql-wasm.wasm");
 function database(adapter: MemoryVaultAdapter, name: string): SynthesisDatabase { return new SynthesisDatabase(adapter, `${name}/conversations.sqlite3`, wasmPath); }
 function thread(id = "thread-1"): Thread { return { id, title: "Thread", createdAt: nowIso(), updatedAt: nowIso() }; }
 function tray(path: string, content: string): TrayItem { return { id: newId("tray"), sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: nowIso() }; }
+function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40, usageJson: '{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40}}' }; }
 
 describe("SQLite persistence", () => {
   it("survives a database instance reload and restores active/previous tray snapshots", async () => {
@@ -48,12 +49,13 @@ describe("SQLite persistence", () => {
     const assistant: Message = { id: "assistant-1", threadId: currentThread.id, turnId, role: "assistant", content: "Answer [S1]", createdAt: nowIso() };
     const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: user.id, assistantMessageId: assistant.id, createdAt: nowIso() };
     const sources: SourceSnapshot[] = currentTray.map((item, index) => ({ id: `source-${index}`, turnId, sourceIndex: index + 1, sourcePath: item.sourcePath, scope: item.scope, headingPath: item.headingPath, contentSnapshot: item.contentSnapshot }));
-    await db.commitTurn(currentThread, user, assistant, turn, sources, currentTray);
+    await db.commitTurn(currentThread, user, assistant, turn, sources, currentTray, usage(turnId));
     const state = await db.load();
     expect(state.activeTray).toEqual([]);
     expect(state.previousTray).toEqual(currentTray);
     expect(state.messages.map((message) => message.content)).toEqual(["Question", "Answer [S1]"]);
     expect(state.sourceSnapshots.map((source) => [source.turnId, source.sourceIndex, source.contentSnapshot])).toEqual([[turnId, 1, "A"], [turnId, 2, "B"]]);
+    expect(state.turnUsage).toEqual([usage(turnId)]);
   });
 
   it("writes a standard SQLite file with recognizable records and no API secret", async () => {
@@ -67,7 +69,7 @@ describe("SQLite persistence", () => {
     const SQL = await initSqlJs({ locateFile: () => wasmPath });
     const inspected = new SQL.Database(bytes);
     const tableNames = inspected.exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")[0].values.flat();
-    expect(tableNames).toEqual(expect.arrayContaining(["threads", "messages", "turns", "source_snapshots", "tray_items", "meta"]));
+    expect(tableNames).toEqual(expect.arrayContaining(["threads", "messages", "turns", "turn_usage", "source_snapshots", "tray_items", "meta"]));
     expect(inspected.exec("SELECT source_path, content_snapshot FROM tray_items")[0].values).toEqual([["active.md", "visible source"]]);
     inspected.close();
   });
@@ -87,5 +89,35 @@ describe("SQLite persistence", () => {
     expect(state.threads.map((entry) => entry.id)).toEqual([second.id]);
     expect(state.messages).toEqual([]);
     expect(state.activeTray[0].contentSnapshot).toBe("keep");
+    expect(state.turnUsage).toEqual([]);
+  });
+
+  it("opens an existing SQLite database and adds turn_usage without destructive migration", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `legacy-${newId("test")}`;
+    const dbPath = `${name}/conversations.sqlite3`;
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const legacy = new SQL.Database();
+    legacy.run("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+    legacy.run("INSERT INTO threads VALUES (?, ?, ?, ?)", ["legacy-thread", "Legacy", "2020-01-01", "2020-01-01"]);
+    const exported = legacy.export();
+    adapter.files.set(dbPath, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
+    legacy.close();
+
+    const state = await database(adapter, name).load();
+    expect(state.threads.map((entry) => entry.id)).toEqual(["legacy-thread"]);
+    const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(dbPath)));
+    expect(inspected.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_usage'")[0].values).toEqual([["turn_usage"]]);
+    inspected.close();
+  });
+
+  it("does not create completed usage for a turn committed without provider usage", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const db = database(adapter, `no-usage-${newId("test")}`);
+    const currentThread = thread();
+    const turnId = "turn-without-usage";
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "user-no-usage", assistantMessageId: "assistant-no-usage", createdAt: nowIso() };
+    await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [], []);
+    expect((await db.load()).turnUsage).toEqual([]);
   });
 });

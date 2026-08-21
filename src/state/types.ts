@@ -34,6 +34,17 @@ export interface Turn {
   createdAt: string;
 }
 
+export type ProviderUsage = Record<string, unknown>;
+
+export interface TurnUsage {
+  turnId: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cachedInputTokens: number | null;
+  usageJson: string | null;
+}
+
 export interface SourceSnapshot {
   id: string;
   turnId: string;
@@ -56,6 +67,7 @@ export interface PersistedState {
   threads: Thread[];
   messages: Message[];
   turns: Turn[];
+  turnUsage: TurnUsage[];
   sourceSnapshots: SourceSnapshot[];
   activeTray: TrayItem[];
   previousTray: TrayItem[];

@@ -1,3 +1,5 @@
+import { ProviderUsage } from "../state/types";
+
 export class OpenAIRequestError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);
@@ -7,6 +9,11 @@ export class OpenAIRequestError extends Error {
 
 export interface StreamCallbacks {
   onDelta: (delta: string) => void;
+}
+
+export interface StreamResponseResult {
+  output: string;
+  usage: ProviderUsage | null;
 }
 
 function readableError(status: number, body: string): string {
@@ -22,7 +29,7 @@ function readableError(status: number, body: string): string {
 }
 
 /** Direct stateless Responses API streaming. The secret is accepted only for this call. */
-export async function streamResponse(apiKey: string, request: unknown, callbacks: StreamCallbacks, signal: AbortSignal): Promise<string> {
+export async function streamResponse(apiKey: string, request: unknown, callbacks: StreamCallbacks, signal: AbortSignal): Promise<StreamResponseResult> {
   let response: Response;
   try {
     response = await fetch("https://api.openai.com/v1/responses", {
@@ -43,11 +50,12 @@ export async function streamResponse(apiKey: string, request: unknown, callbacks
   let buffer = "";
   let output = "";
   let completed = false;
+  let usage: ProviderUsage | null = null;
   const consume = (line: string) => {
     if (!line.startsWith("data:")) return;
     const data = line.slice(5).trim();
     if (data === "[DONE]") return;
-    let event: { type?: string; delta?: string; error?: { message?: string } };
+    let event: { type?: string; delta?: string; error?: { message?: string }; usage?: unknown; response?: { usage?: unknown } };
     try {
       event = JSON.parse(data);
     } catch {
@@ -58,7 +66,11 @@ export async function streamResponse(apiKey: string, request: unknown, callbacks
       output += event.delta;
       callbacks.onDelta(event.delta);
     }
-    if (event.type === "response.completed") completed = true;
+    if (event.type === "response.completed") {
+      const candidate = event.response?.usage ?? event.usage;
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) usage = candidate as ProviderUsage;
+      completed = true;
+    }
   };
 
   while (true) {
@@ -71,5 +83,5 @@ export async function streamResponse(apiKey: string, request: unknown, callbacks
   }
   if (buffer.trim()) consume(buffer.trim());
   if (!completed) throw new OpenAIRequestError("OpenAI ended the stream without a completed response.");
-  return output;
+  return { output, usage };
 }

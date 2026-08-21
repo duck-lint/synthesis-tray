@@ -10,6 +10,7 @@ import { newId, nowIso } from "./state/ids";
 import { makeMessage, titleFromFirstMessage } from "./state/thread";
 import { buildResponsesRequest } from "./openai/requestBuilder";
 import { streamResponse } from "./openai/client";
+import { turnUsageFromProvider } from "./openai/usage";
 import { countNextRequest } from "./tokens/tokenizer";
 import { VIEW_TYPE_SYNTHESIS, SynthesisView } from "./view/SynthesisView";
 
@@ -69,7 +70,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     const detail = error instanceof Error ? error.message : String(error);
     this.lastError = `Local SQLite persistence could not be initialized: ${detail}`;
     this.state = {
-      threads: [], messages: [], turns: [], sourceSnapshots: [], activeTray: [], previousTray: [], activeThreadId: null,
+      threads: [], messages: [], turns: [], turnUsage: [], sourceSnapshots: [], activeTray: [], previousTray: [], activeThreadId: null,
     };
     console.error("[Synthesis Tray] Local SQLite initialization failed", error);
     new Notice(this.lastError);
@@ -195,9 +196,9 @@ export default class SynthesisTrayPlugin extends Plugin {
     this.refreshViews();
   }
 
-  async send(draft: string, onDelta: (delta: string) => void): Promise<void> {
+  async send(draft: string, onDelta: (delta: string) => void): Promise<Turn | null> {
     await this.ready();
-    if (!draft.trim()) return;
+    if (!draft.trim()) return null;
     if (!this.settings.secretName) throw new Error("Select an OpenAI secret in the plugin settings before sending.");
     if (!this.settings.model.trim()) throw new Error("Enter an OpenAI model name in the plugin settings.");
     const secret = await this.app.secretStorage.getSecret(this.settings.secretName);
@@ -211,23 +212,26 @@ export default class SynthesisTrayPlugin extends Plugin {
     this.requestController = controller;
     this.lastError = null;
     try {
-      const assistantContent = await streamResponse(secret, request, { onDelta }, controller.signal);
+      const response = await streamResponse(secret, request, { onDelta }, controller.signal);
       const turnId = newId("turn");
       const user = makeMessage(thread, "user", draft, turnId);
-      const assistant = makeMessage(thread, "assistant", assistantContent, turnId);
+      const assistant = makeMessage(thread, "assistant", response.output, turnId);
       const turn: Turn = { id: turnId, threadId: thread.id, userMessageId: user.id, assistantMessageId: assistant.id, createdAt: nowIso() };
+      const usage = response.usage ? turnUsageFromProvider(turnId, response.usage) : null;
       const sources: SourceSnapshot[] = trayForTurn.map((item, index) => ({
         id: newId("source"), turnId, sourceIndex: index + 1, sourcePath: item.sourcePath, scope: item.scope, headingPath: item.headingPath ? [...item.headingPath] : null, contentSnapshot: item.contentSnapshot,
       }));
       const updatedThread = { ...thread, title: this.messagesFor(thread.id).length === 0 ? titleFromFirstMessage(draft) : thread.title, updatedAt: nowIso() };
-      await this.database.commitTurn(updatedThread, user, assistant, turn, sources, trayForTurn);
+      await this.database.commitTurn(updatedThread, user, assistant, turn, sources, trayForTurn, usage ?? undefined);
       this.state.messages = [...this.state.messages, user, assistant];
       this.state.turns = [...this.state.turns, turn];
+      if (usage) this.state.turnUsage = [...this.state.turnUsage, usage];
       this.state.sourceSnapshots = [...this.state.sourceSnapshots, ...sources];
       this.state.threads = this.state.threads.map((candidate) => candidate.id === thread.id ? updatedThread : candidate);
       const nextTrayState = afterSuccessfulTurn(trayForTurn);
       this.state.previousTray = nextTrayState.previousTray;
       this.state.activeTray = nextTrayState.activeTray;
+      return turn;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) this.lastError = error instanceof Error ? error.message : "Synthesis request failed.";
       throw error;
@@ -269,6 +273,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     this.state.messages = this.state.messages.filter((message) => message.threadId !== threadId);
     const turnIds = new Set(this.state.turns.filter((turn) => turn.threadId === threadId).map((turn) => turn.id));
     this.state.turns = this.state.turns.filter((turn) => turn.threadId !== threadId);
+    this.state.turnUsage = this.state.turnUsage.filter((usage) => !turnIds.has(usage.turnId));
     this.state.sourceSnapshots = this.state.sourceSnapshots.filter((source) => !turnIds.has(source.turnId));
     if (this.state.activeThreadId === threadId) this.state.activeThreadId = this.state.threads[0].id;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);

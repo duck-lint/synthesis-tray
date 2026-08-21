@@ -4,6 +4,7 @@ import { cloneTray } from "../state/tray";
 import { Message, TokenBreakdown, TrayItem } from "../state/types";
 import { shouldSendOnEnter } from "./composerKeyboard";
 import { composerPresentation } from "./composerPresentation";
+import { scrollConversationToMessageStart } from "./conversationScroll";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -16,6 +17,7 @@ export class SynthesisView extends ItemView {
   private tokenElement: HTMLElement | null = null;
   private streaming = false;
   private streamedAssistant = "";
+  private pendingAssistantScrollTurnId: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: SynthesisTrayPlugin) {
     super(leaf);
@@ -67,7 +69,12 @@ export class SynthesisView extends ItemView {
     deleteButton.onclick = () => void this.deleteThread(thread.id);
 
     this.conversationElement = root.createDiv("synthesis-conversation");
-    for (const message of this.plugin.messagesFor(thread.id)) this.renderMessage(this.conversationElement, message);
+    const targetTurnId = this.pendingAssistantScrollTurnId;
+    let targetMessage: HTMLElement | null = null;
+    for (const message of this.plugin.messagesFor(thread.id)) {
+      const element = this.renderMessage(this.conversationElement, message);
+      if (targetTurnId && message.role === "assistant" && message.turnId === targetTurnId) targetMessage = element;
+    }
     if (this.streaming) this.renderStreamingMessage(this.conversationElement);
 
     const composer = root.createDiv("synthesis-composer");
@@ -104,13 +111,16 @@ export class SynthesisView extends ItemView {
 
     this.tokenElement = trayPanel.createDiv("synthesis-token-count");
     this.renderTokenCount();
+    if (targetMessage && this.conversationElement) scrollConversationToMessageStart(this.conversationElement, targetMessage);
+    this.pendingAssistantScrollTurnId = null;
   }
 
-  private renderMessage(container: HTMLElement, message: Message): void {
+  private renderMessage(container: HTMLElement, message: Message): HTMLElement {
     const item = container.createDiv(`synthesis-message synthesis-message-${message.role}`);
     item.createDiv({ text: message.role === "user" ? "You" : "Assistant", cls: "synthesis-message-role" });
     if (message.role === "assistant") void MarkdownRenderer.render(this.app, message.content, item, "", this.plugin);
     else item.createDiv({ text: message.content, cls: "synthesis-message-content" });
+    return item;
   }
 
   private renderStreamingMessage(container: HTMLElement): void {
@@ -146,30 +156,32 @@ export class SynthesisView extends ItemView {
     this.streaming = true;
     this.streamedAssistant = "";
     this.render();
+    let completedTurnId: string | null = null;
     try {
-      await this.plugin.send(draft, (delta) => {
+      const completedTurn = await this.plugin.send(draft, (delta) => {
         this.streamedAssistant += delta;
         if (this.conversationElement) {
           this.conversationElement.empty();
           const thread = this.plugin.state.threads.find((candidate) => candidate.id === this.plugin.state.activeThreadId);
           if (thread) for (const message of this.plugin.messagesFor(thread.id)) this.renderMessage(this.conversationElement, message);
           this.renderStreamingMessage(this.conversationElement);
-          this.conversationElement.scrollTop = this.conversationElement.scrollHeight;
         }
       });
+      completedTurnId = completedTurn?.id ?? null;
       this.draft = "";
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) new Notice(error instanceof Error ? error.message : "Synthesis request failed.");
     } finally {
-      this.finishRequest();
+      this.finishRequest(completedTurnId);
     }
   }
 
-  private finishRequest(): void {
+  private finishRequest(completedTurnId: string | null): void {
     // This is the only terminal transition for success, failure, and abort.
     // Render after flipping the state so the new textarea is necessarily idle.
     this.streaming = false;
     this.streamedAssistant = "";
+    this.pendingAssistantScrollTurnId = completedTurnId;
     this.render();
   }
 
