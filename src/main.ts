@@ -23,20 +23,22 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   override async onload(): Promise<void> {
     this.settings = mergeSettings(await this.loadData());
-    // The adapter path distinguishes two vaults that happen to share a display name.
-    const adapterWithPath = this.app.vault.adapter as { getBasePath?: () => string };
     // Keep the persisted location vault-relative and predictable for backup/tools.
-    const pluginDirectory = `.obsidian/plugins/${this.manifest.id}`;
+    const pluginDirectory = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     const databasePath = `${pluginDirectory}/conversations.sqlite3`;
-    const wasmPath = adapterWithPath.getBasePath ? `${adapterWithPath.getBasePath()}/${pluginDirectory}/sql-wasm.wasm` : `${pluginDirectory}/sql-wasm.wasm`;
+    const wasmPath = `${pluginDirectory}/sql-wasm.wasm`;
     this.database = new SynthesisDatabase(this.app.vault.adapter, databasePath, wasmPath);
-    this.initialization = this.initialize();
-    await this.initialization;
+
+    // Register non-persistence UI surfaces first so a storage failure does not
+    // prevent the plugin from being enabled or its settings from being opened.
     this.registerView(VIEW_TYPE_SYNTHESIS, (leaf) => new SynthesisView(leaf, this));
     this.addSettingTab(new SynthesisSettingTab(this.app, this));
     this.addCommands();
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor, view) => this.addEditorMenu(menu, editor, view as MarkdownView)));
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.addFileMenu(menu, file as TAbstractFile)));
+
+    this.initialization = this.initialize().catch((error) => this.handleInitializationFailure(error));
+    await this.initialization;
   }
 
   override async onunload(): Promise<void> {
@@ -61,6 +63,16 @@ export default class SynthesisTrayPlugin extends Plugin {
       this.state.activeThreadId = this.state.threads[0].id;
       await this.database.setActiveThread(this.state.activeThreadId, this.state.activeTray, this.state.previousTray);
     }
+  }
+
+  private handleInitializationFailure(error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    this.lastError = `Local SQLite persistence could not be initialized: ${detail}`;
+    this.state = {
+      threads: [], messages: [], turns: [], sourceSnapshots: [], activeTray: [], previousTray: [], activeThreadId: null,
+    };
+    console.error("[Synthesis Tray] Local SQLite initialization failed", error);
+    new Notice(this.lastError);
   }
 
   private newThreadRecord(title: string): Thread {

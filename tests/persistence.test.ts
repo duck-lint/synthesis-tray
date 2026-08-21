@@ -1,4 +1,5 @@
 import initSqlJs from "sql.js";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SynthesisDatabase } from "../src/persistence/database";
@@ -7,8 +8,13 @@ import { Message, SourceSnapshot, Thread, TrayItem, Turn } from "../src/state/ty
 
 class MemoryVaultAdapter {
   readonly files = new Map<string, ArrayBuffer>();
+  wasmReads = 0;
+  constructor() {
+    const bytes = readFileSync(wasmPath);
+    this.files.set(wasmPath, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+  }
   async exists(path: string): Promise<boolean> { return this.files.has(path); }
-  async readBinary(path: string): Promise<ArrayBuffer> { const value = this.files.get(path); if (!value) throw new Error(`Missing ${path}`); return value.slice(0); }
+  async readBinary(path: string): Promise<ArrayBuffer> { if (path === wasmPath) this.wasmReads += 1; const value = this.files.get(path); if (!value) throw new Error(`Missing ${path}`); return value.slice(0); }
   async writeBinary(path: string, data: ArrayBuffer): Promise<void> { this.files.set(path, data.slice(0)); }
 }
 
@@ -21,12 +27,14 @@ describe("SQLite persistence", () => {
   it("survives a database instance reload and restores active/previous tray snapshots", async () => {
     const adapter = new MemoryVaultAdapter();
     const current = tray("a.md", "A snapshot");
-    const first = database(adapter, `reload-${newId("test")}`);
+    const name = `reload-${newId("test")}`;
+    const first = database(adapter, name);
     await first.setMeta([current], [], "thread-1");
     await first.close();
-    const reloaded = await database(adapter, [...adapter.files.keys()][0].split("/")[0]).load();
+    const reloaded = await database(adapter, name).load();
     expect(reloaded.activeTray).toEqual([current]);
     expect(reloaded.activeTray[0].contentSnapshot).toBe("A snapshot");
+    expect(adapter.wasmReads).toBeGreaterThan(0);
   });
 
   it("commits relational turn/source records and clears active tray", async () => {

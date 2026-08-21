@@ -63,7 +63,10 @@ export class SynthesisDatabase {
 
   async open(): Promise<void> {
     if (this.db) return;
-    this.sqlReady ??= initSqlJs({ locateFile: () => this.wasmPath }) as unknown as Promise<{ Database: new (data?: Uint8Array) => SqliteDatabase }>;
+    // Obsidian's adapter is the authority for plugin assets. Passing wasmBinary
+    // avoids making Emscripten interpret a vault path as a fetchable filesystem URL.
+    const wasmBinary = await this.adapter.readBinary(this.wasmPath);
+    this.sqlReady ??= initSqlJs({ wasmBinary }) as unknown as Promise<{ Database: new (data?: Uint8Array) => SqliteDatabase }>;
     const SQL = await this.sqlReady;
     const existing = await this.adapter.exists(this.databasePath);
     this.db = new SQL.Database(existing ? new Uint8Array(await this.adapter.readBinary(this.databasePath)) : undefined);
