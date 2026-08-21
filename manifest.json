@@ -1,0 +1,12 @@
+{
+  "id": "obsidian-synthesis-tray",
+  "name": "Synthesis Tray",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Manually compose selected authored Markdown with a conversation for OpenAI synthesis.",
+  "author": "",
+  "isDesktopOnly": true,
+  "authorUrl": "",
+  "fundingUrl": "",
+  "repo": ""
+}
