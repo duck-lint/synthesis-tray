@@ -235,7 +235,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     if (!thread) throw new Error("No active synthesis thread.");
     const trayForTurn = cloneTray(this.state.activeTray);
     const priorMessages = this.messagesFor(thread.id);
-    const request = buildResponsesRequest(this.settings, priorMessages, trayForTurn, draft);
+    const request = buildResponsesRequest(this.settings, thread.id, priorMessages, trayForTurn, draft);
     const controller = new AbortController();
     this.requestController = controller;
     this.lastError = null;

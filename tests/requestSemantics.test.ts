@@ -18,7 +18,7 @@ describe("explicit request context", () => {
 
   it("puts only the current tray in the current user turn", () => {
     const prior = [message("user", "What was A?"), message("assistant", "A was discussed.")];
-    const request = buildResponsesRequest(settings, prior, [source("b.md", "CURRENT B")], "Compare this.");
+    const request = buildResponsesRequest(settings, "thread", prior, [source("b.md", "CURRENT B")], "Compare this.");
     expect(request.instructions).toBe("synth");
     expect(request.input).toEqual([
       { role: "user", content: "What was A?" },
@@ -37,11 +37,12 @@ describe("explicit request context", () => {
   });
 
   it("does not resend an old tray when the next tray changes", () => {
-    const first = buildResponsesRequest(settings, [message("user", "First"), message("assistant", "Answer mentioning A")], [source("a.md", "OLD A")], "First");
-    const second = buildResponsesRequest(settings, [message("user", "First"), message("assistant", "Answer mentioning A")], [source("b.md", "NEW B")], "Second");
+    const first = buildResponsesRequest(settings, "thread", [message("user", "First"), message("assistant", "Answer mentioning A")], [source("a.md", "OLD A")], "First");
+    const second = buildResponsesRequest(settings, "thread", [message("user", "First"), message("assistant", "Answer mentioning A")], [source("b.md", "NEW B")], "Second");
     expect(first.input.at(-1)?.content).toContain("OLD A");
     expect(second.input.at(-1)?.content).toContain("NEW B");
     expect(second.input.at(-1)?.content).not.toContain("OLD A");
+    expect(first.input.slice(0, -1)).toEqual(second.input.slice(0, -1));
   });
 
   it("adds deterministic line numbers only to model-facing source serialization", () => {
@@ -61,7 +62,7 @@ describe("explicit request context", () => {
       if (order === "message-first") currentDraft = "Compare these.";
       currentTray = [source("a.md", "A"), source("b.md", "B")];
       if (order === "tray-first") currentDraft = "Compare these.";
-      return buildResponsesRequest({ ...settings, model: "gpt-5.6" }, prior, currentTray, currentDraft);
+      return buildResponsesRequest({ ...settings, model: "gpt-5.6" }, "thread", prior, currentTray, currentDraft);
     };
     const first = buildAfter("message-first");
     const second = buildAfter("tray-first");
@@ -71,15 +72,53 @@ describe("explicit request context", () => {
   });
 
   it("keeps instructions in every request while enabling or disabling cache metadata", () => {
-    const cached = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, [], [], "One");
-    const ordinary = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: false }, [], [], "One");
+    const cached = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, "thread-a", [], [], "One");
+    const ordinary = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: false }, "thread-a", [], [], "One");
     expect(cached.instructions).toBe(ordinary.instructions);
     expect(cached.input).toEqual(ordinary.input);
     expect(cached.prompt_cache_key).toBeTruthy();
     expect(cached.prompt_cache_key).not.toContain("A");
     expect(cached.prompt_cache_key).not.toContain("openai-main");
-    expect(cached.prompt_cache_options).toEqual({ mode: "implicit", ttl: "30m" });
+    expect(cached.prompt_cache_options).toEqual({ mode: "explicit", ttl: "30m" });
     expect(ordinary).not.toHaveProperty("prompt_cache_key");
     expect(ordinary).not.toHaveProperty("prompt_cache_options");
+  });
+
+  it("marks only the latest two supported user boundaries and leaves assistant and tray suffixes unmarked", () => {
+    const prior = [
+      message("user", "User 1"), message("assistant", "Assistant 1"),
+      message("user", "User 2"), message("assistant", "Assistant 2"),
+      message("user", "User 3"), message("assistant", "Assistant 3"),
+    ];
+    const request = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, "thread", prior, [source("current.md", "CURRENT TRAY")], "CURRENT MESSAGE");
+    expect(request.input.slice(0, 3)).toEqual([
+      { role: "user", content: "User 1" },
+      { role: "assistant", content: "Assistant 1" },
+      { role: "user", content: [{ type: "input_text", text: "User 2", prompt_cache_breakpoint: { mode: "explicit" } }] },
+    ]);
+    expect(request.input[2]).toEqual({ role: "user", content: [{ type: "input_text", text: "User 2", prompt_cache_breakpoint: { mode: "explicit" } }] });
+    expect(request.input[4]).toEqual({ role: "user", content: [{ type: "input_text", text: "User 3", prompt_cache_breakpoint: { mode: "explicit" } }] });
+    expect(request.input[3]).toEqual({ role: "assistant", content: "Assistant 2" });
+    expect(request.input[5]).toEqual({ role: "assistant", content: "Assistant 3" });
+    expect(request.input.at(-1)?.content).toEqual(expect.stringContaining("CURRENT TRAY"));
+    expect(request.input.at(-1)?.content).toEqual(expect.stringContaining("CURRENT MESSAGE"));
+    expect(JSON.stringify(request.input.at(-1))).not.toContain("prompt_cache_breakpoint");
+  });
+
+  it("scopes cache keys to the thread and system prompt namespace", () => {
+    const base = { ...settings, model: "gpt-5.6", promptCachingEnabled: true };
+    const first = buildResponsesRequest(base, "thread-a", [], [], "One");
+    const otherThread = buildResponsesRequest(base, "thread-b", [], [], "One");
+    const otherPrompt = buildResponsesRequest({ ...base, systemPrompt: "different" }, "thread-a", [], [], "One");
+    expect(first.prompt_cache_key).not.toBe(otherThread.prompt_cache_key);
+    expect(first.prompt_cache_key).not.toBe(otherPrompt.prompt_cache_key);
+    expect(first.prompt_cache_key).toMatch(/^synthesis-tray:/);
+  });
+
+  it("does not pad a short reusable prefix", () => {
+    const request = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, "thread", [message("user", "short"), message("assistant", "short answer")], [], "question");
+    const marked = request.input[1].content;
+    expect(marked).toBe("short answer");
+    expect(JSON.stringify(request)).not.toContain("padding");
   });
 });

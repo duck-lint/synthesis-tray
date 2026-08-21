@@ -22,7 +22,7 @@ const wasmPath = resolve("node_modules/sql.js/dist/sql-wasm.wasm");
 function database(adapter: MemoryVaultAdapter, name: string): SynthesisDatabase { return new SynthesisDatabase(adapter, `${name}/conversations.sqlite3`, wasmPath); }
 function thread(id = "thread-1"): Thread { return { id, title: "Thread", createdAt: nowIso(), updatedAt: nowIso() }; }
 function tray(path: string, content: string): TrayItem { return { id: newId("tray"), sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: nowIso() }; }
-function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40, usageJson: '{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40}}' }; }
+function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40, cacheWriteTokens: 25, usageJson: '{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":25}}' }; }
 
 describe("SQLite persistence", () => {
   it("proves sql.js export during an open transaction includes uncommitted rows", async () => {
@@ -139,6 +139,24 @@ describe("SQLite persistence", () => {
     expect(state.threads.map((entry) => entry.id)).toEqual(["legacy-thread"]);
     const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(dbPath)));
     expect(inspected.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_usage'")[0].values).toEqual([["turn_usage"]]);
+    expect(inspected.exec("PRAGMA table_info(turn_usage)")[0].values.map((row) => row[1])).toContain("cache_write_tokens");
+    inspected.close();
+  });
+
+  it("adds cache-write telemetry to an existing turn_usage table", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `legacy-usage-${newId("test")}`;
+    const dbPath = `${name}/conversations.sqlite3`;
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const legacy = new SQL.Database();
+    legacy.run("CREATE TABLE turn_usage (turn_id TEXT PRIMARY KEY, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, cached_input_tokens INTEGER, usage_json TEXT)");
+    const exported = legacy.export();
+    adapter.files.set(dbPath, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
+    legacy.close();
+
+    await database(adapter, name).load();
+    const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(dbPath)));
+    expect(inspected.exec("PRAGMA table_info(turn_usage)")[0].values.map((row) => row[1])).toContain("cache_write_tokens");
     inspected.close();
   });
 

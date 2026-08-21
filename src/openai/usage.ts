@@ -17,6 +17,7 @@ export function turnUsageFromProvider(turnId: string, usage: ProviderUsage | nul
     outputTokens: numberOrNull(usage?.output_tokens),
     totalTokens: numberOrNull(usage?.total_tokens),
     cachedInputTokens: numberOrNull(inputDetails.cached_tokens),
+    cacheWriteTokens: numberOrNull(inputDetails.cache_write_tokens),
     usageJson: usage ? JSON.stringify(usage) : null,
   };
 }

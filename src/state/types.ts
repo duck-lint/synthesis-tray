@@ -44,6 +44,7 @@ export interface TurnUsage {
   outputTokens: number | null;
   totalTokens: number | null;
   cachedInputTokens: number | null;
+  cacheWriteTokens: number | null;
   usageJson: string | null;
 }
 
