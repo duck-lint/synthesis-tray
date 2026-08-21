@@ -1,7 +1,7 @@
 import { TrayItem } from "./types";
 
-export function trayIdentity(item: Pick<TrayItem, "sourcePath" | "scope" | "headingPath" | "contentSnapshot">): string {
-  return JSON.stringify([item.sourcePath, item.scope, item.headingPath, item.contentSnapshot]);
+export function trayIdentity(item: Pick<TrayItem, "sourcePath" | "scope" | "headingPath" | "contentSnapshot" | "conversationThreadId" | "conversationTitle">): string {
+  return JSON.stringify([item.sourcePath, item.scope, item.headingPath, item.contentSnapshot, item.conversationThreadId ?? null, item.conversationTitle ?? null]);
 }
 
 export function addTrayItem(tray: TrayItem[], item: TrayItem): { tray: TrayItem[]; duplicate: boolean } {

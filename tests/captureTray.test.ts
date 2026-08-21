@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { captureFolderWholeNotes, captureHeading, captureSelection, captureWholeNote } from "../src/capture/capture";
+import { captureConversation, captureFolderWholeNotes, captureHeading, captureSelection, captureWholeNote } from "../src/capture/capture";
 import { addTrayItem, removeTrayItem, trayIdentity } from "../src/state/tray";
 import { TrayItem } from "../src/state/types";
 
@@ -58,6 +58,20 @@ describe("manual capture and tray", () => {
       getCursor: (where?: "from" | "to") => where === "to" ? { line: 4, ch: 6 } : { line: 1, ch: 0 },
     };
     expect(captureSelection("note.md", source, editor)?.headingPath).toBeNull();
+  });
+
+  it("captures a different thread as one immutable visible-transcript source", () => {
+    const thread = { id: "thread-source", title: "Referenced thread", createdAt: "now", updatedAt: "now" };
+    const messages = [
+      { id: "u1", threadId: thread.id, turnId: "turn-1", role: "user" as const, content: "Question", createdAt: "1" },
+      { id: "a1", threadId: thread.id, turnId: "turn-1", role: "assistant" as const, content: "Answer", createdAt: "2" },
+    ];
+    const captured = captureConversation(thread, messages);
+    expect(captured.scope).toBe("conversation");
+    expect(captured.conversationThreadId).toBe(thread.id);
+    expect(captured.conversationTitle).toBe(thread.title);
+    expect(captured.contentSnapshot).toBe("User:\nQuestion\n\nAssistant:\nAnswer");
+    expect(captured.contentSnapshot).not.toContain("source_snapshots");
   });
 
   it("prevents exact duplicates and preserves insertion order", () => {

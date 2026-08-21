@@ -1,4 +1,4 @@
-export type Scope = "highlight" | "heading" | "whole_note";
+export type Scope = "highlight" | "heading" | "whole_note" | "conversation";
 export type MessageRole = "user" | "assistant";
 
 export interface TrayItem {
@@ -8,6 +8,8 @@ export interface TrayItem {
   headingPath: string[] | null;
   contentSnapshot: string;
   addedAt: string;
+  conversationThreadId?: string;
+  conversationTitle?: string;
 }
 
 export interface Thread {
@@ -53,6 +55,8 @@ export interface SourceSnapshot {
   scope: Scope;
   headingPath: string[] | null;
   contentSnapshot: string;
+  conversationThreadId?: string;
+  conversationTitle?: string;
 }
 
 export interface TokenBreakdown {
@@ -86,6 +90,11 @@ agreement where the sources differ.
 
 When grounding a claim in selected material, use the supplied source
 identifiers such as [S1], [S2], and [S3].
+
+When grounding a specific passage, prefer line-aware citations such as
+[S1:L42-L48] or [S3:L7], where line numbers refer to the numbered source
+snapshot supplied for this turn. Plain [S1] remains valid when the entire
+source is relevant. Do not require a citation in every sentence.
 
 Do not infer that something is absent from the user's vault merely because
 it was not included in the selected sources for this turn.`;

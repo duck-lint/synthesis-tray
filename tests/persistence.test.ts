@@ -73,6 +73,22 @@ describe("SQLite persistence", () => {
     expect(state.turnUsage).toEqual([usage(turnId)]);
   });
 
+  it("persists conversation source identity with the immutable snapshot", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const db = database(adapter, `conversation-source-${newId("test")}`);
+    const currentThread = thread();
+    const conversation: TrayItem = { id: "conversation-source", sourcePath: 'Conversation: "Referenced"', scope: "conversation", headingPath: null, contentSnapshot: "User:\nQuestion\n\nAssistant:\nAnswer", addedAt: nowIso(), conversationThreadId: "referenced-thread", conversationTitle: "Referenced" };
+    await db.setMeta([conversation], [], currentThread.id);
+    await db.putThread(currentThread);
+    const turnId = "conversation-turn";
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "conversation-user", assistantMessageId: "conversation-assistant", createdAt: nowIso() };
+    await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [{ id: "conversation-snapshot", turnId, sourceIndex: 1, sourcePath: conversation.sourcePath, scope: conversation.scope, headingPath: null, contentSnapshot: conversation.contentSnapshot, conversationThreadId: conversation.conversationThreadId, conversationTitle: conversation.conversationTitle }], [conversation]);
+    const state = await db.load();
+    expect(state.previousTray).toEqual([conversation]);
+    expect(state.sourceSnapshots[0].conversationThreadId).toBe("referenced-thread");
+    expect(state.sourceSnapshots[0].conversationTitle).toBe("Referenced");
+  });
+
   it("writes a standard SQLite file with recognizable records and no API secret", async () => {
     const adapter = new MemoryVaultAdapter();
     const dbPath = `inspect-${newId("test")}/conversations.sqlite3`;

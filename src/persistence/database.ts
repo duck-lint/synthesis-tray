@@ -23,8 +23,8 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_message_id TEXT NOT NULL, assistant_message_id TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS turn_usage (turn_id TEXT PRIMARY KEY, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, cached_input_tokens INTEGER, usage_json TEXT, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
-  CREATE TABLE IF NOT EXISTS source_snapshots (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, source_index INTEGER NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
-  CREATE TABLE IF NOT EXISTS tray_items (tray_name TEXT NOT NULL CHECK (tray_name IN ('active', 'previous')), ordinal INTEGER NOT NULL, id TEXT NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (tray_name, id));
+  CREATE TABLE IF NOT EXISTS source_snapshots (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, source_index INTEGER NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, conversation_thread_id TEXT, conversation_title TEXT, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS tray_items (tray_name TEXT NOT NULL CHECK (tray_name IN ('active', 'previous')), ordinal INTEGER NOT NULL, id TEXT NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, added_at TEXT NOT NULL, conversation_thread_id TEXT, conversation_title TEXT, PRIMARY KEY (tray_name, id));
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 `;
 
@@ -38,8 +38,13 @@ function rowObjects(result: Array<{ columns: string[]; values: unknown[][] }>): 
   return first ? first.values.map((values) => Object.fromEntries(first.columns.map((column, index) => [column, values[index]]))) : [];
 }
 
+function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {
+  const columns = rowObjects(db.exec(`PRAGMA table_info(${table})`));
+  if (!columns.some((entry) => entry.name === column)) db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 function asTrayScope(value: unknown): TrayItem["scope"] {
-  if (value === "highlight" || value === "heading" || value === "whole_note") return value;
+  if (value === "highlight" || value === "heading" || value === "whole_note" || value === "conversation") return value;
   throw new Error(`Invalid persisted tray scope: ${String(value)}`);
 }
 
@@ -48,6 +53,8 @@ function parseTrayRows(rows: Array<Record<string, unknown>>): TrayItem[] {
     id: asString(row.id), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope),
     headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null,
     contentSnapshot: asString(row.content_snapshot), addedAt: asString(row.added_at),
+    ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }),
+    ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }),
   }));
 }
 
@@ -76,6 +83,10 @@ export class SynthesisDatabase {
       this.db = new SQL.Database(existing ? new Uint8Array(await this.adapter.readBinary(this.databasePath)) : undefined);
       this.db.run("PRAGMA foreign_keys = ON");
       this.db.run(SCHEMA);
+      ensureColumn(this.db, "source_snapshots", "conversation_thread_id", "TEXT");
+      ensureColumn(this.db, "source_snapshots", "conversation_title", "TEXT");
+      ensureColumn(this.db, "tray_items", "conversation_thread_id", "TEXT");
+      ensureColumn(this.db, "tray_items", "conversation_title", "TEXT");
       // Persist schema additions on open as well, so an existing database is
       // upgraded durably without requiring a later conversation mutation.
       await this.persist();
@@ -131,8 +142,8 @@ export class SynthesisDatabase {
     const turnOrder = new Map(turns.map((turn, index) => [turn.id, index]));
     const messages = rowObjects(db.exec("SELECT id, thread_id, turn_id, role, content, created_at FROM messages")).map((row) => ({ id: asString(row.id), threadId: asString(row.thread_id), turnId: asString(row.turn_id), role: row.role === "assistant" ? "assistant" as const : "user" as const, content: asString(row.content), createdAt: asString(row.created_at) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || (a.role === "user" ? -1 : 1));
     const turnUsage = rowObjects(db.exec("SELECT turn_id, input_tokens, output_tokens, total_tokens, cached_input_tokens, usage_json FROM turn_usage ORDER BY turn_id")).map((row): TurnUsage => ({ turnId: asString(row.turn_id), inputTokens: row.input_tokens == null ? null : asNumber(row.input_tokens), outputTokens: row.output_tokens == null ? null : asNumber(row.output_tokens), totalTokens: row.total_tokens == null ? null : asNumber(row.total_tokens), cachedInputTokens: row.cached_input_tokens == null ? null : asNumber(row.cached_input_tokens), usageJson: asNullableString(row.usage_json) }));
-    const sourceSnapshots = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot FROM source_snapshots")).map((row) => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
-    const trayRows = rowObjects(db.exec("SELECT tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at FROM tray_items ORDER BY tray_name, ordinal"));
+    const sourceSnapshots = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, conversation_thread_id, conversation_title FROM source_snapshots")).map((row) => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot), ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }), ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
+    const trayRows = rowObjects(db.exec("SELECT tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at, conversation_thread_id, conversation_title FROM tray_items ORDER BY tray_name, ordinal"));
     const activeTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "active"));
     const previousTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "previous"));
     const meta = new Map(rowObjects(db.exec("SELECT key, value FROM meta")).map((row) => [asString(row.key), asNullableString(row.value)]));
@@ -150,7 +161,7 @@ export class SynthesisDatabase {
       db.run("INSERT INTO messages (id, thread_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)", [assistant.id, assistant.threadId, assistant.turnId, assistant.role, assistant.content, assistant.createdAt]);
       db.run("INSERT INTO turns (id, thread_id, user_message_id, assistant_message_id, created_at) VALUES (?, ?, ?, ?, ?)", [turn.id, turn.threadId, turn.userMessageId, turn.assistantMessageId, turn.createdAt]);
       if (usage) db.run("INSERT INTO turn_usage (turn_id, input_tokens, output_tokens, total_tokens, cached_input_tokens, usage_json) VALUES (?, ?, ?, ?, ?, ?)", [usage.turnId, usage.inputTokens, usage.outputTokens, usage.totalTokens, usage.cachedInputTokens, usage.usageJson]);
-      for (const source of sources) db.run("INSERT INTO source_snapshots (id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)", [source.id, source.turnId, source.sourceIndex, source.sourcePath, source.scope, source.headingPath ? JSON.stringify(source.headingPath) : null, source.contentSnapshot]);
+      for (const source of sources) db.run("INSERT INTO source_snapshots (id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, conversation_thread_id, conversation_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [source.id, source.turnId, source.sourceIndex, source.sourcePath, source.scope, source.headingPath ? JSON.stringify(source.headingPath) : null, source.contentSnapshot, source.conversationThreadId ?? null, source.conversationTitle ?? null]);
       this.replaceTray(db, "previous", tray); this.replaceTray(db, "active", []);
     });
   }
@@ -171,7 +182,7 @@ export class SynthesisDatabase {
 
   private replaceTray(db: SqliteDatabase, trayName: "active" | "previous", tray: TrayItem[]): void {
     db.run("DELETE FROM tray_items WHERE tray_name = ?", [trayName]);
-    tray.forEach((item, index) => db.run("INSERT INTO tray_items (tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [trayName, index + 1, item.id, item.sourcePath, item.scope, item.headingPath ? JSON.stringify(item.headingPath) : null, item.contentSnapshot, item.addedAt]));
+    tray.forEach((item, index) => db.run("INSERT INTO tray_items (tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at, conversation_thread_id, conversation_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [trayName, index + 1, item.id, item.sourcePath, item.scope, item.headingPath ? JSON.stringify(item.headingPath) : null, item.contentSnapshot, item.addedAt, item.conversationThreadId ?? null, item.conversationTitle ?? null]));
   }
 
   private putMeta(db: SqliteDatabase, key: string, value: string | null): void { db.run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [key, value]); }

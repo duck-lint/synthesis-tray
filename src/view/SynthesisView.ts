@@ -5,6 +5,7 @@ import { Message, TokenBreakdown, TrayItem } from "../state/types";
 import { shouldSendOnEnter } from "./composerKeyboard";
 import { composerPresentation } from "./composerPresentation";
 import { scrollConversationToMessageStart } from "./conversationScroll";
+import { sourceManifestEntries } from "./sourceManifest";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -61,6 +62,15 @@ export class SynthesisView extends ItemView {
       await this.plugin.switchThread(threadSelect.value);
       this.render();
     };
+    const conversationSelect = header.createEl("select", { cls: "synthesis-conversation-select", attr: { "aria-label": "Add conversation to synthesis" } });
+    conversationSelect.createEl("option", { text: "Add conversation", value: "" });
+    for (const candidate of state.threads.filter((entry) => entry.id !== thread.id)) conversationSelect.createEl("option", { text: candidate.title, value: candidate.id });
+    conversationSelect.disabled = this.streaming || state.threads.length <= 1;
+    conversationSelect.onchange = async () => {
+      const selectedThreadId = conversationSelect.value;
+      conversationSelect.value = "";
+      if (selectedThreadId) await this.plugin.addConversationToTray(selectedThreadId);
+    };
     const newButton = header.createEl("button", { text: "+", attr: { "aria-label": "New thread" } });
     newButton.onclick = () => void this.createThread();
     const renameButton = header.createEl("button", { text: "Rename", cls: "mod-muted" });
@@ -73,6 +83,7 @@ export class SynthesisView extends ItemView {
     let targetMessage: HTMLElement | null = null;
     for (const message of this.plugin.messagesFor(thread.id)) {
       const element = this.renderMessage(this.conversationElement, message);
+      if (message.role === "assistant") this.renderSourceManifest(this.conversationElement, message.turnId);
       if (targetTurnId && message.role === "assistant" && message.turnId === targetTurnId) targetMessage = element;
     }
     if (this.streaming) this.renderStreamingMessage(this.conversationElement);
@@ -173,6 +184,21 @@ export class SynthesisView extends ItemView {
       if (!(error instanceof DOMException && error.name === "AbortError")) new Notice(error instanceof Error ? error.message : "Synthesis request failed.");
     } finally {
       this.finishRequest(completedTurnId);
+    }
+  }
+
+  private renderSourceManifest(container: HTMLElement, turnId: string): void {
+    const sources = sourceManifestEntries(this.plugin.state.sourceSnapshots.filter((source) => source.turnId === turnId));
+    if (sources.length === 0) return;
+    const manifest = container.createEl("details", { cls: "synthesis-source-manifest" });
+    manifest.createEl("summary", { text: "Sources" });
+    for (const source of sources) {
+      const row = manifest.createDiv("synthesis-source-manifest-row");
+      row.createEl("strong", { text: `S${source.sourceIndex}` });
+      const description = row.createDiv("synthesis-source-manifest-description");
+      description.createEl("span", { text: source.identity });
+      description.createEl("span", { text: source.scope, cls: "synthesis-tray-scope" });
+      if (source.headingPath) description.createEl("span", { text: `§ ${source.headingPath.join(" > ")}`, cls: "synthesis-tray-heading" });
     }
   }
 

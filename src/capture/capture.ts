@@ -1,6 +1,6 @@
 import { headingContainingOffset, extractHeadingRegion } from "./headingParser";
 import { newId, nowIso } from "../state/ids";
-import { TrayItem } from "../state/types";
+import { Message, Thread, TrayItem } from "../state/types";
 
 export interface EditorSelectionLike {
   getSelection(): string;
@@ -55,6 +55,23 @@ export function captureWholeNote(sourcePath: string, source: string): TrayItem {
     headingPath: null,
     contentSnapshot: source,
     addedAt: nowIso(),
+  };
+}
+
+/** Capture only the visible transcript; historical source snapshots are not reachable here. */
+export function captureConversation(thread: Thread, messages: Message[]): TrayItem {
+  const contentSnapshot = messages
+    .map((message) => `${message.role === "user" ? "User" : "Assistant"}:\n${message.content}`)
+    .join("\n\n");
+  return {
+    id: newId("tray"),
+    sourcePath: `Conversation: "${thread.title}"`,
+    scope: "conversation",
+    headingPath: null,
+    contentSnapshot,
+    addedAt: nowIso(),
+    conversationThreadId: thread.id,
+    conversationTitle: thread.title,
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildRequestText, buildResponsesRequest } from "../src/openai/requestBuilder";
-import { serializeTray } from "../src/openai/sourceSerializer";
+import { serializeSourceLines, serializeTray } from "../src/openai/sourceSerializer";
 import { Message, PluginSettings, TrayItem } from "../src/state/types";
 
 const settings: PluginSettings = { secretName: "openai-main", model: "custom-model", systemPrompt: "synth", maxOutputTokens: 123, promptCachingEnabled: false };
@@ -42,6 +42,15 @@ describe("explicit request context", () => {
     expect(first.input.at(-1)?.content).toContain("OLD A");
     expect(second.input.at(-1)?.content).toContain("NEW B");
     expect(second.input.at(-1)?.content).not.toContain("OLD A");
+  });
+
+  it("adds deterministic line numbers only to model-facing source serialization", () => {
+    const raw = "first\nsecond\nthird";
+    const text = serializeTray([source("a.md", raw)]);
+    expect(serializeSourceLines(raw)).toBe("L1: first\nL2: second\nL3: third");
+    expect(text).toContain("L1: first\nL2: second\nL3: third");
+    expect(text).toContain("[S1]");
+    expect(source("a.md", raw).contentSnapshot).toBe(raw);
   });
 
   it("builds equivalent requests regardless of whether tray or message state was populated first", () => {

@@ -62,6 +62,14 @@
   overflow-wrap: anywhere;
 }
 
+.synthesis-conversation-select {
+  min-width: 0;
+  max-width: 12rem;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+}
+
 .synthesis-message-assistant,
 .synthesis-message-assistant * {
   user-select: text;
@@ -70,6 +78,24 @@
 
 .synthesis-streaming {
   white-space: pre-wrap;
+}
+
+.synthesis-source-manifest {
+  margin: calc(var(--size-2-1) * -1) 0 var(--size-4-4) var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.synthesis-source-manifest-row {
+  display: flex;
+  gap: var(--size-2-2);
+  padding-top: var(--size-2-1);
+}
+
+.synthesis-source-manifest-description {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .synthesis-composer {

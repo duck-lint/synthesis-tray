@@ -1,5 +1,5 @@
 import { Editor, MarkdownView, Menu, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf } from "obsidian";
-import { captureFolderWholeNotes, captureHeading, captureSelection, captureWholeNote, offsetAtPosition } from "./capture/capture";
+import { captureConversation, captureFolderWholeNotes, captureHeading, captureSelection, captureWholeNote, offsetAtPosition } from "./capture/capture";
 import { SynthesisSettingTab } from "./settings";
 import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
@@ -150,6 +150,15 @@ export default class SynthesisTrayPlugin extends Plugin {
   private async addNote(file: TFile, currentBuffer?: string): Promise<void> {
     const source = currentBuffer ?? await this.app.vault.read(file);
     await this.addTray(captureWholeNote(file.path, source));
+  }
+
+  async addConversationToTray(threadId: string): Promise<void> {
+    if (threadId === this.state.activeThreadId) return void new Notice("Choose a different conversation thread.");
+    const thread = this.state.threads.find((candidate) => candidate.id === threadId);
+    if (!thread) return;
+    const messages = this.messagesFor(thread.id);
+    if (messages.length === 0) return void new Notice("That conversation has no visible messages to add.");
+    await this.addTray(captureConversation(thread, messages));
   }
 
   private async addFolder(folder: TFolder): Promise<void> {
