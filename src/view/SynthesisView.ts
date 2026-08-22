@@ -247,7 +247,10 @@ export class SynthesisView extends ItemView {
     const menu = new Menu();
     menu.addItem((item) => item.setTitle("Reference in next message").setIcon("quote").onClick(() => {
       this.draft = insertAssistantReference(this.draft, excerpt);
-      this.render();
+      // Rebuild through the existing boundary so the passage being referenced,
+      // tray position, and any draft selection remain stable while the quote
+      // is inserted into the composer.
+      this.refresh({ preserveScroll: true });
       this.draftElement?.focus();
     }));
     menu.showAtMouseEvent(event);
