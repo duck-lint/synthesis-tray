@@ -23,14 +23,6 @@ export class SynthesisSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Model")
-      .setDesc("The model identifier sent to the Responses API.")
-      .addText((text) => text.setValue(this.plugin.settings.model).onChange(async (value) => {
-        this.plugin.settings.model = value;
-        await this.plugin.saveSettings();
-      }));
-
-    new Setting(containerEl)
       .setName("System prompt")
       .setDesc("The complete editable synthesis instruction.")
       .addTextArea((text) => text

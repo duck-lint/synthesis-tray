@@ -1,4 +1,4 @@
-import { Message, PluginSettings, TrayItem } from "../state/types";
+import { Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem } from "../state/types";
 import { serializeTray } from "./sourceSerializer";
 
 export interface ResponsesInputMessage {
@@ -17,6 +17,7 @@ export interface ResponsesRequest {
   instructions: string;
   input: ResponsesInputMessage[];
   max_output_tokens: number;
+  reasoning: { effort: ReasoningEffort };
   stream: true;
   prompt_cache_key?: string;
   prompt_cache_options?: { mode: "explicit"; ttl: "30m" };
@@ -26,6 +27,11 @@ export interface RequestTextParts {
   conversation: string;
   tray: string;
   currentUser: string;
+}
+
+export interface InferenceConfig {
+  model: SynthesisModel;
+  reasoningEffort: ReasoningEffort;
 }
 
 export function buildRequestText(priorMessages: Message[], tray: TrayItem[], draft: string): RequestTextParts {
@@ -45,21 +51,21 @@ function stableHash(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-export function promptCacheKey(settings: PluginSettings, threadId: string): string {
+export function promptCacheKey(settings: PluginSettings, model: SynthesisModel, threadId: string): string {
   // Responses API keys are limited to 64 characters. Keep the model legible
   // while hashing each namespace component so unrelated threads cannot share
   // a cache entry and long generated IDs cannot exceed the provider limit.
-  const model = settings.model.trim().replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 16);
-  return `synthesis-tray:${model}-${stableHash(settings.model)}:${stableHash(settings.systemPrompt)}:${stableHash(threadId)}`;
+  const modelLabel = model.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 16);
+  return `synthesis-tray:${modelLabel}-${stableHash(model)}:${stableHash(settings.systemPrompt)}:${stableHash(threadId)}`;
 }
 
-function supportsPromptCacheOptions(model: string): boolean {
-  return /^gpt-5\.6(?:$|[-.])/.test(model.trim());
+function supportsPromptCacheOptions(model: SynthesisModel): boolean {
+  return /^gpt-5\.6(?:$|[-.])/.test(model);
 }
 
-export function buildResponsesRequest(settings: PluginSettings, threadId: string, priorMessages: Message[], tray: TrayItem[], draft: string): ResponsesRequest {
+export function buildResponsesRequest(settings: PluginSettings, config: InferenceConfig, threadId: string, priorMessages: Message[], tray: TrayItem[], draft: string): ResponsesRequest {
   const { currentUser } = buildRequestText(priorMessages, tray, draft);
-  const cacheable = settings.promptCachingEnabled && supportsPromptCacheOptions(settings.model);
+  const cacheable = settings.promptCachingEnabled && supportsPromptCacheOptions(config.model);
   // Responses only accepts breakpoint-capable input_text blocks on user-role
   // message content. Assistant messages accept output_text content, but the
   // provider does not treat a marker there as a cache-writing breakpoint.
@@ -72,7 +78,7 @@ export function buildResponsesRequest(settings: PluginSettings, threadId: string
     .slice(-2);
   const markedBoundaries = new Set(userBoundaries);
   const request: ResponsesRequest = {
-    model: settings.model.trim(),
+    model: config.model,
     instructions: settings.systemPrompt,
     input: [
       ...priorMessages.map((message, index): ResponsesInputMessage => markedBoundaries.has(index) && cacheable
@@ -81,10 +87,11 @@ export function buildResponsesRequest(settings: PluginSettings, threadId: string
       { role: "user", content: currentUser },
     ],
     max_output_tokens: settings.maxOutputTokens,
+    reasoning: { effort: config.reasoningEffort },
     stream: true,
   };
   if (cacheable) {
-    request.prompt_cache_key = promptCacheKey(settings, threadId);
+    request.prompt_cache_key = promptCacheKey(settings, config.model, threadId);
     request.prompt_cache_options = { mode: "explicit", ttl: "30m" };
   }
   return request;

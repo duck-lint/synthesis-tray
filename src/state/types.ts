@@ -1,6 +1,20 @@
 export type Scope = "highlight" | "heading" | "whole_note" | "conversation";
 export type MessageRole = "user" | "assistant";
 
+export type SynthesisModel = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export const DEFAULT_MODEL: SynthesisModel = "gpt-5.6-sol";
+// The pre-amendment request had no explicit reasoning control; none is the least
+// surprising deterministic default while users can opt into stronger effort.
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
+
+export interface CaptureGroup {
+  id: string;
+  kind: "folder";
+  label: string;
+}
+
 export interface TrayItem {
   id: string;
   sourcePath: string;
@@ -8,6 +22,7 @@ export interface TrayItem {
   headingPath: string[] | null;
   contentSnapshot: string;
   addedAt: string;
+  captureGroup?: CaptureGroup;
   conversationThreadId?: string;
   conversationTitle?: string;
 }
@@ -17,6 +32,8 @@ export interface Thread {
   title: string;
   createdAt: string;
   updatedAt: string;
+  model: SynthesisModel;
+  reasoningEffort: ReasoningEffort;
 }
 
 export interface Message {
@@ -34,6 +51,9 @@ export interface Turn {
   userMessageId: string;
   assistantMessageId: string;
   createdAt: string;
+  /** Null means the historical request configuration is not evidenced. */
+  model: SynthesisModel | null;
+  reasoningEffort: ReasoningEffort | null;
 }
 
 export type ProviderUsage = Record<string, unknown>;
@@ -56,6 +76,7 @@ export interface SourceSnapshot {
   scope: Scope;
   headingPath: string[] | null;
   contentSnapshot: string;
+  captureGroup?: CaptureGroup;
   conversationThreadId?: string;
   conversationTitle?: string;
 }
@@ -103,7 +124,6 @@ it was not included in the selected sources for this turn.`;
 export interface PluginSettings {
   /** Only the Obsidian SecretStorage name is persisted here. */
   secretName: string;
-  model: string;
   systemPrompt: string;
   maxOutputTokens: number;
   promptCachingEnabled: boolean;
@@ -111,8 +131,22 @@ export interface PluginSettings {
 
 export const DEFAULT_SETTINGS: PluginSettings = {
   secretName: "",
-  model: "gpt-5.6",
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   maxOutputTokens: 4096,
   promptCachingEnabled: true,
 };
+
+export function isSynthesisModel(value: unknown): value is SynthesisModel {
+  return value === "gpt-5.6-sol" || value === "gpt-5.6-terra" || value === "gpt-5.6-luna";
+}
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+}
+
+/** Migrate only the legacy supported alias; unrelated arbitrary IDs are not reinterpreted. */
+export function migrateLegacyModel(value: unknown): SynthesisModel {
+  if (value === "gpt-5.6" || value === "gpt-5.6-sol") return "gpt-5.6-sol";
+  if (isSynthesisModel(value)) return value;
+  return DEFAULT_MODEL;
+}

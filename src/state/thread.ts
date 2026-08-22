@@ -1,4 +1,4 @@
-import { Message, Thread } from "./types";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, Message, Thread } from "./types";
 import { newId, nowIso } from "./ids";
 
 export function titleFromFirstMessage(content: string): string {
@@ -9,4 +9,9 @@ export function titleFromFirstMessage(content: string): string {
 
 export function makeMessage(thread: Thread, role: Message["role"], content: string, turnId: string): Message {
   return { id: newId("message"), threadId: thread.id, turnId, role, content, createdAt: nowIso() };
+}
+
+/** New objects always use the canonical product default, independent of legacy settings. */
+export function newThreadInferenceDefaults(): Pick<Thread, "model" | "reasoningEffort"> {
+  return { model: DEFAULT_MODEL, reasoningEffort: DEFAULT_REASONING_EFFORT };
 }

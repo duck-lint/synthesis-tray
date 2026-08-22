@@ -22,6 +22,12 @@ describe("manual capture and tray", () => {
     ]);
     expect(captured.map((item) => item.contentSnapshot)).toEqual(["---\ntags: [one]\n---\nA ![[image.png]]", "B", "C"]);
   });
+  it("preserves explicit folder capture provenance without changing child sources", () => {
+    const group = { id: "folder-group", kind: "folder" as const, label: "Research" };
+    const captured = captureFolderWholeNotes([{ path: "Research/A.md", extension: "md", source: "A" }], group);
+    expect(captured[0].captureGroup).toEqual(group);
+    expect(captured[0].scope).toBe("whole_note");
+  });
   it("preserves exact selection and does not expand its paragraph", () => {
     const source = "Before sentence. Selected one. Selected two. After sentence.";
     const editor = {
@@ -61,7 +67,7 @@ describe("manual capture and tray", () => {
   });
 
   it("captures a different thread as one immutable visible-transcript source", () => {
-    const thread = { id: "thread-source", title: "Referenced thread", createdAt: "now", updatedAt: "now" };
+    const thread = { id: "thread-source", title: "Referenced thread", createdAt: "now", updatedAt: "now", model: "gpt-5.6-sol" as const, reasoningEffort: "medium" as const };
     const messages = [
       { id: "u1", threadId: thread.id, turnId: "turn-1", role: "user" as const, content: "Question", createdAt: "1" },
       { id: "a1", threadId: thread.id, turnId: "turn-1", role: "assistant" as const, content: "Answer", createdAt: "2" },
