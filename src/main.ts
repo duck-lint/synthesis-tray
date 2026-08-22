@@ -5,7 +5,7 @@ import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
 import { addTrayItem, cloneTray, removeTrayItem } from "./state/tray";
 import { afterSuccessfulTurn, clearedActiveTray, recalledPreviousTray } from "./state/turnLifecycle";
-import { Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn } from "./state/types";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isSynthesisModel, migrateLegacyModel, Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn, SynthesisModel, ReasoningEffort } from "./state/types";
 import { newId, nowIso } from "./state/ids";
 import { makeMessage, titleFromFirstMessage } from "./state/thread";
 import { buildResponsesRequest } from "./openai/requestBuilder";
@@ -22,9 +22,16 @@ export default class SynthesisTrayPlugin extends Plugin {
   lastError: string | null = null;
   private initialization!: Promise<void>;
   private requestController: AbortController | null = null;
+  private legacyModel: SynthesisModel = DEFAULT_MODEL;
 
   override async onload(): Promise<void> {
-    this.settings = mergeSettings(await this.loadData());
+    const storedSettings = await this.loadData() as (Partial<PluginSettings> & { model?: unknown }) | null;
+    this.legacyModel = migrateLegacyModel(storedSettings?.model);
+    if (storedSettings?.model && storedSettings.model !== "gpt-5.6" && !isSynthesisModel(storedSettings.model)) {
+      new Notice("The previous model setting was not a supported GPT-5.6 tier; new thread configuration defaults to Sol.");
+    }
+    this.settings = mergeSettings(storedSettings);
+    await this.saveSettings();
     // Keep the persisted location vault-relative and predictable for backup/tools.
     const pluginDirectory = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     const databasePath = `${pluginDirectory}/conversations.sqlite3`;
@@ -54,7 +61,7 @@ export default class SynthesisTrayPlugin extends Plugin {
   async saveSettings(): Promise<void> { await this.saveData(this.settings); }
 
   private async initialize(): Promise<void> {
-    this.state = await this.database.load();
+    this.state = await this.database.load(this.legacyModel, DEFAULT_REASONING_EFFORT, this.legacyModel);
     if (this.state.threads.length === 0) {
       const thread = this.newThreadRecord("New synthesis thread");
       this.state.threads = [thread];
@@ -65,6 +72,9 @@ export default class SynthesisTrayPlugin extends Plugin {
       this.state.activeThreadId = this.state.threads[0].id;
       await this.database.setActiveThread(this.state.activeThreadId, this.state.activeTray, this.state.previousTray);
     }
+    // Persist deterministic defaults into rows created before thread-scoped inference existed.
+    for (const thread of this.state.threads) await this.database.putThread(thread);
+    for (const turn of this.state.turns) await this.database.updateTurnInference(turn.id, turn.model, turn.reasoningEffort);
   }
 
   private handleInitializationFailure(error: unknown): void {
@@ -79,7 +89,7 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   private newThreadRecord(title: string): Thread {
     const timestamp = nowIso();
-    return { id: newId("thread"), title, createdAt: timestamp, updatedAt: timestamp };
+    return { id: newId("thread"), title, createdAt: timestamp, updatedAt: timestamp, model: this.legacyModel, reasoningEffort: DEFAULT_REASONING_EFFORT };
   }
 
   private addCommands(): void {
@@ -169,7 +179,8 @@ export default class SynthesisTrayPlugin extends Plugin {
       .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
     if (files.length === 0) return void new Notice(`No Markdown notes found beneath "${folder.path || folder.name}".`);
     if (!await confirmAction(this.app, "Add folder to synthesis", `Add ${files.length} Markdown notes from "${folder.path || folder.name}" to synthesis?`)) return;
-    const items = captureFolderWholeNotes(await Promise.all(files.map(async (file) => ({ path: file.path, extension: file.extension, source: await this.app.vault.read(file) }))));
+    const captureGroup = { id: newId("capture-group"), kind: "folder" as const, label: folder.path || folder.name };
+    const items = captureFolderWholeNotes(await Promise.all(files.map(async (file) => ({ path: file.path, extension: file.extension, source: await this.app.vault.read(file) }))), captureGroup);
     await this.addTrayItems(items, `Added ${items.length} Markdown notes from "${folder.path || folder.name}" to synthesis.`);
   }
 
@@ -180,17 +191,19 @@ export default class SynthesisTrayPlugin extends Plugin {
   private async addTrayItems(items: TrayItem[], successNotice: string): Promise<void> {
     let nextTray = this.state.activeTray;
     let added = 0;
+    const addedItems: TrayItem[] = [];
     for (const item of items) {
       const result = addTrayItem(nextTray, item);
       if (result.duplicate) continue;
       nextTray = result.tray;
       added += 1;
+      addedItems.push(item);
     }
     if (added === 0) return void new Notice("That exact snapshot is already in the synthesis tray.");
     this.state.activeTray = nextTray;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
     new Notice(successNotice);
-    this.refreshViews();
+    this.refreshViews({ revealTrayItemId: addedItems.at(-1)?.id });
   }
 
   async removeTrayItem(id: string): Promise<void> {
@@ -228,14 +241,13 @@ export default class SynthesisTrayPlugin extends Plugin {
     await this.ready();
     if (!draft.trim()) return null;
     if (!this.settings.secretName) throw new Error("Select an OpenAI secret in the plugin settings before sending.");
-    if (!this.settings.model.trim()) throw new Error("Enter an OpenAI model name in the plugin settings.");
     const secret = await this.app.secretStorage.getSecret(this.settings.secretName);
     if (!secret) throw new Error("The selected OpenAI secret is unavailable.");
     const thread = this.state.threads.find((candidate) => candidate.id === this.state.activeThreadId);
     if (!thread) throw new Error("No active synthesis thread.");
     const trayForTurn = cloneTray(this.state.activeTray);
     const priorMessages = this.messagesFor(thread.id);
-    const request = buildResponsesRequest(this.settings, thread.id, priorMessages, trayForTurn, draft);
+    const request = buildResponsesRequest(this.settings, thread, thread.id, priorMessages, trayForTurn, draft);
     const controller = new AbortController();
     this.requestController = controller;
     this.lastError = null;
@@ -244,10 +256,10 @@ export default class SynthesisTrayPlugin extends Plugin {
       const turnId = newId("turn");
       const user = makeMessage(thread, "user", draft, turnId);
       const assistant = makeMessage(thread, "assistant", response.output, turnId);
-      const turn: Turn = { id: turnId, threadId: thread.id, userMessageId: user.id, assistantMessageId: assistant.id, createdAt: nowIso() };
+      const turn: Turn = { id: turnId, threadId: thread.id, userMessageId: user.id, assistantMessageId: assistant.id, createdAt: nowIso(), model: thread.model, reasoningEffort: thread.reasoningEffort };
       const usage = response.usage ? turnUsageFromProvider(turnId, response.usage) : null;
       const sources: SourceSnapshot[] = trayForTurn.map((item, index) => ({
-        id: newId("source"), turnId, sourceIndex: index + 1, sourcePath: item.sourcePath, scope: item.scope, headingPath: item.headingPath ? [...item.headingPath] : null, contentSnapshot: item.contentSnapshot,
+        id: newId("source"), turnId, sourceIndex: index + 1, sourcePath: item.sourcePath, scope: item.scope, headingPath: item.headingPath ? [...item.headingPath] : null, contentSnapshot: item.contentSnapshot, ...(item.captureGroup ? { captureGroup: { ...item.captureGroup } } : {}),
       }));
       const updatedThread = { ...thread, title: this.messagesFor(thread.id).length === 0 ? titleFromFirstMessage(draft) : thread.title, updatedAt: nowIso() };
       await this.database.commitTurn(updatedThread, user, assistant, turn, sources, trayForTurn, usage ?? undefined);
@@ -277,14 +289,23 @@ export default class SynthesisTrayPlugin extends Plugin {
     if (clearTray) this.state.activeTray = [];
     await this.database.putThread(thread);
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, thread.id);
-    this.refreshViews();
+    this.refreshViews({ preserveScroll: false });
+  }
+
+  async updateThreadInference(threadId: string, model: SynthesisModel, reasoningEffort: ReasoningEffort): Promise<void> {
+    const existing = this.state.threads.find((candidate) => candidate.id === threadId);
+    if (!existing) return;
+    const updated = { ...existing, model, reasoningEffort, updatedAt: nowIso() };
+    this.state.threads = this.state.threads.map((thread) => thread.id === threadId ? updated : thread);
+    await this.database.putThread(updated);
+    this.refreshViews({ preserveScroll: true });
   }
 
   async switchThread(threadId: string): Promise<void> {
     if (!this.state.threads.some((thread) => thread.id === threadId)) return;
     this.state.activeThreadId = threadId;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, threadId);
-    this.refreshViews();
+    this.refreshViews({ preserveScroll: false });
   }
 
   async renameThread(threadId: string, title: string): Promise<void> {
@@ -308,10 +329,14 @@ export default class SynthesisTrayPlugin extends Plugin {
     this.refreshViews();
   }
 
-  private refreshViews(): void {
+  turnFor(turnId: string): Turn | undefined { return this.state.turns.find((turn) => turn.id === turnId); }
+
+  usageForTurn(turnId: string) { return this.state.turnUsage.find((usage) => usage.turnId === turnId); }
+
+  private refreshViews(options?: { revealTrayItemId?: string; preserveScroll?: boolean }): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SYNTHESIS)) {
       const view = leaf.view;
-      if (view instanceof SynthesisView) view.refresh();
+      if (view instanceof SynthesisView) view.refresh(options);
     }
   }
 }

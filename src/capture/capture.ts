@@ -1,6 +1,6 @@
 import { headingContainingOffset, extractHeadingRegion } from "./headingParser";
 import { newId, nowIso } from "../state/ids";
-import { Message, Thread, TrayItem } from "../state/types";
+import { CaptureGroup, Message, Thread, TrayItem } from "../state/types";
 
 export interface EditorSelectionLike {
   getSelection(): string;
@@ -82,10 +82,10 @@ export interface FolderCaptureFile {
 }
 
 /** Sorts before capture so folder actions have stable source ordering and IDs. */
-export function captureFolderWholeNotes(files: FolderCaptureFile[]): TrayItem[] {
+export function captureFolderWholeNotes(files: FolderCaptureFile[], captureGroup?: CaptureGroup): TrayItem[] {
   return files
     .filter((file) => file.extension.toLowerCase() === "md")
     .slice()
     .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
-    .map((file) => captureWholeNote(file.path, file.source));
+    .map((file) => ({ ...captureWholeNote(file.path, file.source), ...(captureGroup ? { captureGroup: { ...captureGroup } } : {}) }));
 }

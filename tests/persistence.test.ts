@@ -20,7 +20,7 @@ class MemoryVaultAdapter {
 
 const wasmPath = resolve("node_modules/sql.js/dist/sql-wasm.wasm");
 function database(adapter: MemoryVaultAdapter, name: string): SynthesisDatabase { return new SynthesisDatabase(adapter, `${name}/conversations.sqlite3`, wasmPath); }
-function thread(id = "thread-1"): Thread { return { id, title: "Thread", createdAt: nowIso(), updatedAt: nowIso() }; }
+function thread(id = "thread-1"): Thread { return { id, title: "Thread", createdAt: nowIso(), updatedAt: nowIso(), model: "gpt-5.6-sol", reasoningEffort: "medium" }; }
 function tray(path: string, content: string): TrayItem { return { id: newId("tray"), sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: nowIso() }; }
 function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40, cacheWriteTokens: 25, usageJson: '{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":25}}' }; }
 
@@ -62,7 +62,7 @@ describe("SQLite persistence", () => {
     const turnId = "turn-1";
     const user: Message = { id: "user-1", threadId: currentThread.id, turnId, role: "user", content: "Question", createdAt: nowIso() };
     const assistant: Message = { id: "assistant-1", threadId: currentThread.id, turnId, role: "assistant", content: "Answer [S1]", createdAt: nowIso() };
-    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: user.id, assistantMessageId: assistant.id, createdAt: nowIso() };
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: user.id, assistantMessageId: assistant.id, createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
     const sources: SourceSnapshot[] = currentTray.map((item, index) => ({ id: `source-${index}`, turnId, sourceIndex: index + 1, sourcePath: item.sourcePath, scope: item.scope, headingPath: item.headingPath, contentSnapshot: item.contentSnapshot }));
     await db.commitTurn(currentThread, user, assistant, turn, sources, currentTray, usage(turnId));
     const state = await db.load();
@@ -70,6 +70,7 @@ describe("SQLite persistence", () => {
     expect(state.previousTray).toEqual(currentTray);
     expect(state.messages.map((message) => message.content)).toEqual(["Question", "Answer [S1]"]);
     expect(state.sourceSnapshots.map((source) => [source.turnId, source.sourceIndex, source.contentSnapshot])).toEqual([[turnId, 1, "A"], [turnId, 2, "B"]]);
+    expect(state.turns[0]).toMatchObject({ model: currentThread.model, reasoningEffort: currentThread.reasoningEffort });
     expect(state.turnUsage).toEqual([usage(turnId)]);
   });
 
@@ -81,12 +82,28 @@ describe("SQLite persistence", () => {
     await db.setMeta([conversation], [], currentThread.id);
     await db.putThread(currentThread);
     const turnId = "conversation-turn";
-    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "conversation-user", assistantMessageId: "conversation-assistant", createdAt: nowIso() };
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "conversation-user", assistantMessageId: "conversation-assistant", createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
     await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [{ id: "conversation-snapshot", turnId, sourceIndex: 1, sourcePath: conversation.sourcePath, scope: conversation.scope, headingPath: null, contentSnapshot: conversation.contentSnapshot, conversationThreadId: conversation.conversationThreadId, conversationTitle: conversation.conversationTitle }], [conversation]);
     const state = await db.load();
     expect(state.previousTray).toEqual([conversation]);
     expect(state.sourceSnapshots[0].conversationThreadId).toBe("referenced-thread");
     expect(state.sourceSnapshots[0].conversationTitle).toBe("Referenced");
+  });
+
+  it("persists explicit folder capture provenance through active and historical snapshots", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const db = database(adapter, `folder-group-${newId("test")}`);
+    const currentThread = thread();
+    const group = { id: "folder-group", kind: "folder" as const, label: "Research" };
+    const grouped = { ...tray("Research/A.md", "A"), captureGroup: group };
+    await db.setMeta([grouped], [], currentThread.id);
+    await db.putThread(currentThread);
+    const turnId = "folder-turn";
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "folder-user", assistantMessageId: "folder-assistant", createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
+    await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [{ id: "folder-source", turnId, sourceIndex: 1, sourcePath: grouped.sourcePath, scope: grouped.scope, headingPath: null, contentSnapshot: grouped.contentSnapshot, captureGroup: group }], [grouped]);
+    const state = await db.load();
+    expect(state.previousTray[0].captureGroup).toEqual(group);
+    expect(state.sourceSnapshots[0].captureGroup).toEqual(group);
   });
 
   it("writes a standard SQLite file with recognizable records and no API secret", async () => {
@@ -112,7 +129,7 @@ describe("SQLite persistence", () => {
     const second = thread("thread-b");
     await db.putThread(first);
     await db.putThread(second);
-    const turn: Turn = { id: "turn-a", threadId: first.id, userMessageId: "user-a", assistantMessageId: "assistant-a", createdAt: nowIso() };
+    const turn: Turn = { id: "turn-a", threadId: first.id, userMessageId: "user-a", assistantMessageId: "assistant-a", createdAt: nowIso(), model: first.model, reasoningEffort: first.reasoningEffort };
     await db.commitTurn(first, { id: "user-a", threadId: first.id, turnId: turn.id, role: "user", content: "old", createdAt: nowIso() }, { id: "assistant-a", threadId: first.id, turnId: turn.id, role: "assistant", content: "old answer", createdAt: nowIso() }, turn, [], []);
     await db.setMeta([tray("active.md", "keep")], [], second.id);
     await db.deleteThread(first.id);
@@ -137,6 +154,7 @@ describe("SQLite persistence", () => {
 
     const state = await database(adapter, name).load();
     expect(state.threads.map((entry) => entry.id)).toEqual(["legacy-thread"]);
+    expect(state.threads[0]).toMatchObject({ model: "gpt-5.6-sol", reasoningEffort: "none" });
     const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(dbPath)));
     expect(inspected.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_usage'")[0].values).toEqual([["turn_usage"]]);
     expect(inspected.exec("PRAGMA table_info(turn_usage)")[0].values.map((row) => row[1])).toContain("cache_write_tokens");
@@ -165,7 +183,7 @@ describe("SQLite persistence", () => {
     const db = database(adapter, `no-usage-${newId("test")}`);
     const currentThread = thread();
     const turnId = "turn-without-usage";
-    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "user-no-usage", assistantMessageId: "assistant-no-usage", createdAt: nowIso() };
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "user-no-usage", assistantMessageId: "assistant-no-usage", createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
     await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [], []);
     expect((await db.load()).turnUsage).toEqual([]);
   });
@@ -187,7 +205,7 @@ describe("SQLite persistence", () => {
     };
 
     const makeTurn = (turnId: string): { turn: Turn; user: Message; assistant: Message } => {
-      const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: `${turnId}-user`, assistantMessageId: `${turnId}-assistant`, createdAt: nowIso() };
+      const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: `${turnId}-user`, assistantMessageId: `${turnId}-assistant`, createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
       return {
         turn,
         user: { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: `${turnId} question`, createdAt: nowIso() },

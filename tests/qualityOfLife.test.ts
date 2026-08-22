@@ -9,7 +9,7 @@ describe("quality-of-life interaction boundaries", () => {
 
   it("labels the unsent composer bucket as Message", () => {
     const source = readFileSync("src/view/SynthesisView.ts", "utf8");
-    expect(source).toContain("message ${breakdown.draft.toLocaleString()}");
-    expect(source).not.toContain("draft ${breakdown.draft.toLocaleString()}");
+    expect(source).toContain('["Message", breakdown.draft]');
+    expect(source).not.toContain('["Draft", breakdown.draft]');
   });
 });

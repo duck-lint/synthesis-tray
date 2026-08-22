@@ -3,7 +3,8 @@ import { buildRequestText, buildResponsesRequest } from "../src/openai/requestBu
 import { serializeSourceLines, serializeTray } from "../src/openai/sourceSerializer";
 import { Message, PluginSettings, TrayItem } from "../src/state/types";
 
-const settings: PluginSettings = { secretName: "openai-main", model: "custom-model", systemPrompt: "synth", maxOutputTokens: 123, promptCachingEnabled: false };
+const settings: PluginSettings = { secretName: "openai-main", systemPrompt: "synth", maxOutputTokens: 123, promptCachingEnabled: false };
+const config = { model: "gpt-5.6-sol" as const, reasoningEffort: "medium" as const };
 const source = (path: string, content: string): TrayItem => ({ id: path, sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: "now" });
 const message = (role: Message["role"], content: string): Message => ({ id: content, threadId: "thread", turnId: "turn", role, content, createdAt: "now" });
 
@@ -18,8 +19,10 @@ describe("explicit request context", () => {
 
   it("puts only the current tray in the current user turn", () => {
     const prior = [message("user", "What was A?"), message("assistant", "A was discussed.")];
-    const request = buildResponsesRequest(settings, "thread", prior, [source("b.md", "CURRENT B")], "Compare this.");
+    const request = buildResponsesRequest(settings, config, "thread", prior, [source("b.md", "CURRENT B")], "Compare this.");
     expect(request.instructions).toBe("synth");
+    expect(request.model).toBe("gpt-5.6-sol");
+    expect(request.reasoning).toEqual({ effort: "medium" });
     expect(request.input).toEqual([
       { role: "user", content: "What was A?" },
       { role: "assistant", content: "A was discussed." },
@@ -37,8 +40,8 @@ describe("explicit request context", () => {
   });
 
   it("does not resend an old tray when the next tray changes", () => {
-    const first = buildResponsesRequest(settings, "thread", [message("user", "First"), message("assistant", "Answer mentioning A")], [source("a.md", "OLD A")], "First");
-    const second = buildResponsesRequest(settings, "thread", [message("user", "First"), message("assistant", "Answer mentioning A")], [source("b.md", "NEW B")], "Second");
+    const first = buildResponsesRequest(settings, config, "thread", [message("user", "First"), message("assistant", "Answer mentioning A")], [source("a.md", "OLD A")], "First");
+    const second = buildResponsesRequest(settings, config, "thread", [message("user", "First"), message("assistant", "Answer mentioning A")], [source("b.md", "NEW B")], "Second");
     expect(first.input.at(-1)?.content).toContain("OLD A");
     expect(second.input.at(-1)?.content).toContain("NEW B");
     expect(second.input.at(-1)?.content).not.toContain("OLD A");
@@ -62,7 +65,7 @@ describe("explicit request context", () => {
       if (order === "message-first") currentDraft = "Compare these.";
       currentTray = [source("a.md", "A"), source("b.md", "B")];
       if (order === "tray-first") currentDraft = "Compare these.";
-      return buildResponsesRequest({ ...settings, model: "gpt-5.6" }, "thread", prior, currentTray, currentDraft);
+      return buildResponsesRequest(settings, config, "thread", prior, currentTray, currentDraft);
     };
     const first = buildAfter("message-first");
     const second = buildAfter("tray-first");
@@ -72,8 +75,8 @@ describe("explicit request context", () => {
   });
 
   it("keeps instructions in every request while enabling or disabling cache metadata", () => {
-    const cached = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, "thread-a", [], [], "One");
-    const ordinary = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: false }, "thread-a", [], [], "One");
+    const cached = buildResponsesRequest({ ...settings, promptCachingEnabled: true }, config, "thread-a", [], [], "One");
+    const ordinary = buildResponsesRequest({ ...settings, promptCachingEnabled: false }, config, "thread-a", [], [], "One");
     expect(cached.instructions).toBe(ordinary.instructions);
     expect(cached.input).toEqual(ordinary.input);
     expect(cached.prompt_cache_key).toBeTruthy();
@@ -90,7 +93,7 @@ describe("explicit request context", () => {
       message("user", "User 2"), message("assistant", "Assistant 2"),
       message("user", "User 3"), message("assistant", "Assistant 3"),
     ];
-    const request = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, "thread", prior, [source("current.md", "CURRENT TRAY")], "CURRENT MESSAGE");
+    const request = buildResponsesRequest({ ...settings, promptCachingEnabled: true }, config, "thread", prior, [source("current.md", "CURRENT TRAY")], "CURRENT MESSAGE");
     expect(request.input.slice(0, 3)).toEqual([
       { role: "user", content: "User 1" },
       { role: "assistant", content: "Assistant 1" },
@@ -106,17 +109,17 @@ describe("explicit request context", () => {
   });
 
   it("scopes cache keys to the thread and system prompt namespace", () => {
-    const base = { ...settings, model: "gpt-5.6", promptCachingEnabled: true };
-    const first = buildResponsesRequest(base, "thread-a", [], [], "One");
-    const otherThread = buildResponsesRequest(base, "thread-b", [], [], "One");
-    const otherPrompt = buildResponsesRequest({ ...base, systemPrompt: "different" }, "thread-a", [], [], "One");
+    const base = { ...settings, promptCachingEnabled: true };
+    const first = buildResponsesRequest(base, config, "thread-a", [], [], "One");
+    const otherThread = buildResponsesRequest(base, config, "thread-b", [], [], "One");
+    const otherPrompt = buildResponsesRequest({ ...base, systemPrompt: "different" }, config, "thread-a", [], [], "One");
     expect(first.prompt_cache_key).not.toBe(otherThread.prompt_cache_key);
     expect(first.prompt_cache_key).not.toBe(otherPrompt.prompt_cache_key);
     expect(first.prompt_cache_key).toMatch(/^synthesis-tray:/);
   });
 
   it("does not pad a short reusable prefix", () => {
-    const request = buildResponsesRequest({ ...settings, model: "gpt-5.6", promptCachingEnabled: true }, "thread", [message("user", "short"), message("assistant", "short answer")], [], "question");
+    const request = buildResponsesRequest({ ...settings, promptCachingEnabled: true }, config, "thread", [message("user", "short"), message("assistant", "short answer")], [], "question");
     const marked = request.input[1].content;
     expect(marked).toBe("short answer");
     expect(JSON.stringify(request)).not.toContain("padding");

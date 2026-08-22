@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { afterSuccessfulTurn, afterUnsuccessfulTurn, clearedActiveTray, recalledPreviousTray } from "../src/state/turnLifecycle";
-import { presentationTrayItems } from "../src/state/tray";
+import { presentationTrayEntries, presentationTrayItems } from "../src/state/tray";
 import { TrayItem } from "../src/state/types";
 
 const source = (contentSnapshot: string): TrayItem => ({ id: "tray-1", sourcePath: "note.md", scope: "whole_note", headingPath: null, contentSnapshot, addedAt: "now" });
@@ -41,5 +41,17 @@ describe("tray lifecycle", () => {
     expect(displayed.map(({ item }) => item.contentSnapshot)).toEqual(["C", "B", "A"]);
     expect(displayed.map(({ index }) => index)).toEqual([2, 1, 0]);
     expect(tray.map((item) => item.contentSnapshot)).toEqual(["A", "B", "C"]);
+  });
+
+  it("renders an explicit folder capture as one newest-first group with canonical children", () => {
+    const group = { id: "folder", kind: "folder" as const, label: "Research" };
+    const tray = [
+      { ...source("A"), id: "a", captureGroup: group },
+      { ...source("B"), id: "b", captureGroup: group },
+      { ...source("C"), id: "c" },
+    ];
+    const entries = presentationTrayEntries(tray);
+    expect(entries[0]).toEqual({ kind: "item", item: tray[2], index: 2 });
+    expect(entries[1]).toMatchObject({ kind: "folder", group, items: [{ item: tray[0], index: 0 }, { item: tray[1], index: 1 }] });
   });
 });
