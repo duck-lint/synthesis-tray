@@ -1,4 +1,4 @@
-import { Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem } from "../state/types";
+import { Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem, Verbosity } from "../state/types";
 import { serializeTray } from "./sourceSerializer";
 
 export interface ResponsesInputMessage {
@@ -18,6 +18,7 @@ export interface ResponsesRequest {
   input: ResponsesInputMessage[];
   max_output_tokens: number;
   reasoning: { effort: ReasoningEffort };
+  text: { verbosity: Verbosity };
   stream: true;
   prompt_cache_key?: string;
   prompt_cache_options?: { mode: "explicit"; ttl: "30m" };
@@ -88,6 +89,7 @@ export function buildResponsesRequest(settings: PluginSettings, config: Inferenc
     ],
     max_output_tokens: settings.maxOutputTokens,
     reasoning: { effort: config.reasoningEffort },
+    text: { verbosity: settings.verbosity },
     stream: true,
   };
   if (cacheable) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { citationContextIsEligible, parseCitationReferences } from "../src/view/citations";
 import { snapshotLines } from "../src/view/snapshotLines";
+import { DEFAULT_SYSTEM_PROMPT } from "../src/state/types";
 
 describe("historical citation presentation", () => {
   it("parses source and snapshot-relative line references", () => {
@@ -9,6 +10,15 @@ describe("historical citation presentation", () => {
       { sourceIndex: 2, lineStart: 42, lineEnd: 42, raw: "[S2:L42]" },
       { sourceIndex: 3, lineStart: 7, lineEnd: 12, raw: "[S3:L7-L12]" },
     ]);
+  });
+
+  it("does not manufacture lines for a source-only citation", () => {
+    expect(parseCitationReferences("Supported by [S1].")[0]).toEqual({ sourceIndex: 1, lineStart: null, lineEnd: null, raw: "[S1]" });
+  });
+
+  it("requires narrow localized citations without requiring citation noise", () => {
+    expect(DEFAULT_SYSTEM_PROMPT).toContain("cite the narrowest useful snapshot-relative line or line");
+    expect(DEFAULT_SYSTEM_PROMPT).toContain("Use plain [S1] only for a genuinely source-wide claim");
   });
 
   it("numbers the captured snapshot rather than claiming vault coordinates", () => {

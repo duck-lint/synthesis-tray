@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "keywords": ["obsidian", "synthesis"],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "devDependencies": {
     "@types/sql.js": "^1.4.11",
     "@types/node": "^22.0.0",

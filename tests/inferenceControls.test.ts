@@ -14,7 +14,8 @@ describe("thread inference controls", () => {
   });
 
   it("does not fabricate inference metadata for legacy turns", () => {
-    expect(inferenceSummary(null, null, null, null, null)).toBe("Inference configuration unavailable");
-    expect(inferenceSummary(null, null, 12, 4, null)).toBe("Inference configuration unavailable · 12 input · 4 output");
+    expect(inferenceSummary(null, null, null, null, null, null)).toBe("Inference configuration unavailable");
+    expect(inferenceSummary(null, null, 12, 4, null, null)).toBe("Inference configuration unavailable · 12 input · 4 output");
+    expect(inferenceSummary("gpt-5.6-luna", "high", 12, 6, 4, null)).toContain("6 output (4 reasoning)");
   });
 });

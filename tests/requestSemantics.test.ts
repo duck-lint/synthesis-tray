@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 import { buildRequestText, buildResponsesRequest } from "../src/openai/requestBuilder";
 import { serializeSourceLines, serializeTray } from "../src/openai/sourceSerializer";
 import { Message, PluginSettings, TrayItem } from "../src/state/types";
+import { insertAssistantReference } from "../src/view/assistantReference";
 
-const settings: PluginSettings = { secretName: "openai-main", systemPrompt: "synth", maxOutputTokens: 123, promptCachingEnabled: false };
+const settings: PluginSettings = { secretName: "openai-main", systemPrompt: "synth", maxOutputTokens: 123, verbosity: "medium", promptCachingEnabled: false };
 const config = { model: "gpt-5.6-sol" as const, reasoningEffort: "medium" as const };
 const source = (path: string, content: string): TrayItem => ({ id: path, sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: "now" });
 const message = (role: Message["role"], content: string): Message => ({ id: content, threadId: "thread", turnId: "turn", role, content, createdAt: "now" });
 
 describe("explicit request context", () => {
+  it.each(["low", "medium", "high"] as const)("sends %s as text verbosity", (verbosity) => {
+    expect(buildResponsesRequest({ ...settings, verbosity }, config, "thread", [], [], "Question").text).toEqual({ verbosity });
+  });
+
   it("assigns S identifiers from current insertion order", () => {
     const text = serializeTray([source("a.md", "A"), source("b.md", "B"), source("c.md", "C")]);
     expect(text).toContain("[S1]");
@@ -30,6 +35,14 @@ describe("explicit request context", () => {
     ]);
     expect(request.input[2].content).not.toContain("A CONTENT");
     expect(request.input[2].content).toContain("USER MESSAGE:\n\nCompare this.");
+  });
+
+  it("replays an assistant reference as visible current user content", () => {
+    const draft = insertAssistantReference("Follow up", "Assistant excerpt");
+    const request = buildResponsesRequest(settings, config, "thread", [], [], draft);
+    expect(request.input[0]?.content).toContain("Referenced from Assistant");
+    expect(request.input[0]?.content).toContain("> Assistant excerpt");
+    expect(request.input[0]?.content).toContain("Follow up");
   });
 
   it("does not put source serialization into the visible stored user message", () => {
