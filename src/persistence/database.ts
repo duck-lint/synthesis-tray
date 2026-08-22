@@ -1,7 +1,7 @@
 import initSqlJs from "sql.js";
 import { cloneTray } from "../state/tray";
 import { newId, nowIso } from "../state/ids";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isReasoningEffort, isSynthesisModel, Message, PersistedState, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage, ReasoningEffort, SynthesisModel } from "../state/types";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isReasoningEffort, isSynthesisModel, migrateLegacyModel, Message, PersistedState, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage, ReasoningEffort, SynthesisModel } from "../state/types";
 
 /** The small surface of sql.js used here keeps the persistence boundary testable. */
 interface SqliteDatabase {
@@ -41,9 +41,11 @@ function rowObjects(result: Array<{ columns: string[]; values: unknown[][] }>): 
   return first ? first.values.map((values) => Object.fromEntries(first.columns.map((column, index) => [column, values[index]]))) : [];
 }
 
-function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {
+function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): boolean {
   const columns = rowObjects(db.exec(`PRAGMA table_info(${table})`));
-  if (!columns.some((entry) => entry.name === column)) db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  if (columns.some((entry) => entry.name === column)) return false;
+  db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  return true;
 }
 
 function asTrayScope(value: unknown): TrayItem["scope"] {
@@ -71,6 +73,7 @@ export class SynthesisDatabase {
   private sql: { Database: new (data?: Uint8Array) => SqliteDatabase } | null = null;
   private sqlReady: Promise<{ Database: new (data?: Uint8Array) => SqliteDatabase }> | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
+  private schemaDirty = false;
 
   constructor(private readonly adapter: VaultAdapter, private readonly databasePath: string, private readonly wasmPath: string) {}
 
@@ -86,25 +89,25 @@ export class SynthesisDatabase {
     try {
       this.db = new SQL.Database(existing ? new Uint8Array(await this.adapter.readBinary(this.databasePath)) : undefined);
       this.db.run("PRAGMA foreign_keys = ON");
+      const tablesBeforeSchema = new Set(rowObjects(this.db.exec("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => asString(row.name)));
       this.db.run(SCHEMA);
-      ensureColumn(this.db, "source_snapshots", "conversation_thread_id", "TEXT");
-      ensureColumn(this.db, "source_snapshots", "conversation_title", "TEXT");
-      ensureColumn(this.db, "source_snapshots", "capture_group_id", "TEXT");
-      ensureColumn(this.db, "source_snapshots", "capture_group_kind", "TEXT");
-      ensureColumn(this.db, "source_snapshots", "capture_group_label", "TEXT");
-      ensureColumn(this.db, "tray_items", "conversation_thread_id", "TEXT");
-      ensureColumn(this.db, "tray_items", "conversation_title", "TEXT");
-      ensureColumn(this.db, "tray_items", "capture_group_id", "TEXT");
-      ensureColumn(this.db, "tray_items", "capture_group_kind", "TEXT");
-      ensureColumn(this.db, "tray_items", "capture_group_label", "TEXT");
-      ensureColumn(this.db, "threads", "model", "TEXT");
-      ensureColumn(this.db, "threads", "reasoning_effort", "TEXT");
-      ensureColumn(this.db, "turns", "model", "TEXT");
-      ensureColumn(this.db, "turns", "reasoning_effort", "TEXT");
-      ensureColumn(this.db, "turn_usage", "cache_write_tokens", "INTEGER");
-      // Persist schema additions on open as well, so an existing database is
-      // upgraded durably without requiring a later conversation mutation.
-      await this.persist();
+      const tablesAfterSchema = new Set(rowObjects(this.db.exec("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => asString(row.name)));
+      this.schemaDirty = !existing || [...tablesAfterSchema].some((table) => !tablesBeforeSchema.has(table));
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "conversation_thread_id", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "conversation_title", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "capture_group_id", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "capture_group_kind", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "capture_group_label", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "tray_items", "conversation_thread_id", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "tray_items", "conversation_title", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "tray_items", "capture_group_id", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "tray_items", "capture_group_kind", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "tray_items", "capture_group_label", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "threads", "model", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "threads", "reasoning_effort", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "turns", "model", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "turns", "reasoning_effort", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "turn_usage", "cache_write_tokens", "INTEGER") || this.schemaDirty;
     } catch (error) {
       this.db?.close();
       this.db = null;
@@ -119,6 +122,34 @@ export class SynthesisDatabase {
 
   private async persist(): Promise<void> {
     await this.adapter.writeBinary(this.databasePath, writeBinaryValue(this.requireDb().export()));
+  }
+
+  private async migrateLegacyState(migratedModel: SynthesisModel, defaultReasoningEffort: ReasoningEffort): Promise<void> {
+    const db = this.requireDb();
+    const threadRows = rowObjects(db.exec("SELECT model, reasoning_effort FROM threads"));
+    const turnRows = rowObjects(db.exec("SELECT model, reasoning_effort FROM turns"));
+    const needsThreadMigration = threadRows.some((row) => !isSynthesisModel(row.model) || !isReasoningEffort(row.reasoning_effort));
+    const needsTurnCleanup = turnRows.some((row) => row.model != null && !isSynthesisModel(row.model) || row.reasoning_effort != null && !isReasoningEffort(row.reasoning_effort));
+    if (!this.schemaDirty && !needsThreadMigration && !needsTurnCleanup) return;
+
+    const knownGoodImage = new Uint8Array(db.export());
+    db.run("BEGIN");
+    try {
+      // Thread inference defines the next request and can be deterministically
+      // seeded from the former global setting. Historical turn provenance is a
+      // separate claim and stays NULL when the old database did not record it.
+      db.run("UPDATE threads SET model = ? WHERE model IS NULL OR model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')", [migratedModel]);
+      db.run("UPDATE threads SET reasoning_effort = ? WHERE reasoning_effort IS NULL OR reasoning_effort NOT IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')", [defaultReasoningEffort]);
+      db.run("UPDATE turns SET model = NULL WHERE model IS NOT NULL AND model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')");
+      db.run("UPDATE turns SET reasoning_effort = NULL WHERE reasoning_effort IS NOT NULL AND reasoning_effort NOT IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')");
+      db.run("COMMIT");
+      await this.persist();
+      this.schemaDirty = false;
+    } catch (error) {
+      try { db.run("ROLLBACK"); } catch { /* Restore the last known-good image below. */ }
+      this.restore(knownGoodImage);
+      throw error;
+    }
   }
 
   private restore(image: Uint8Array): void {
@@ -137,7 +168,7 @@ export class SynthesisDatabase {
       // image, so retain the last known-good committed database for recovery.
       const knownGoodImage = new Uint8Array(db.export());
       db.run("BEGIN");
-      try { operation(db); db.run("COMMIT"); await this.persist(); }
+      try { operation(db); db.run("COMMIT"); await this.persist(); this.schemaDirty = false; }
       catch (error) {
         try { db.run("ROLLBACK"); } catch { /* A failed disk write occurs after COMMIT. */ }
         this.restore(knownGoodImage);
@@ -152,10 +183,11 @@ export class SynthesisDatabase {
     await this.open();
     await this.writeQueue;
     const db = this.requireDb();
-    const migratedModel = isSynthesisModel(legacyModel) || legacyModel === "gpt-5.6" ? (legacyModel === "gpt-5.6" ? DEFAULT_MODEL : legacyModel as SynthesisModel) : defaultModel;
+    const migratedModel = legacyModel == null ? defaultModel : migrateLegacyModel(legacyModel);
+    await this.migrateLegacyState(migratedModel, defaultReasoningEffort);
     const threads = rowObjects(db.exec("SELECT id, title, created_at, updated_at, model, reasoning_effort FROM threads ORDER BY created_at, id")).map((row) => ({ id: asString(row.id), title: asString(row.title), createdAt: asString(row.created_at), updatedAt: asString(row.updated_at), model: asModel(row.model, migratedModel), reasoningEffort: asReasoningEffort(row.reasoning_effort, defaultReasoningEffort) }));
     const threadById = new Map(threads.map((thread) => [thread.id, thread]));
-    const turns = rowObjects(db.exec("SELECT id, thread_id, user_message_id, assistant_message_id, created_at, model, reasoning_effort FROM turns ORDER BY created_at, id")).map((row) => ({ id: asString(row.id), threadId: asString(row.thread_id), userMessageId: asString(row.user_message_id), assistantMessageId: asString(row.assistant_message_id), createdAt: asString(row.created_at), model: asModel(row.model, threadById.get(asString(row.thread_id))?.model ?? migratedModel), reasoningEffort: asReasoningEffort(row.reasoning_effort, threadById.get(asString(row.thread_id))?.reasoningEffort ?? defaultReasoningEffort) }));
+    const turns = rowObjects(db.exec("SELECT id, thread_id, user_message_id, assistant_message_id, created_at, model, reasoning_effort FROM turns ORDER BY created_at, id")).map((row) => ({ id: asString(row.id), threadId: asString(row.thread_id), userMessageId: asString(row.user_message_id), assistantMessageId: asString(row.assistant_message_id), createdAt: asString(row.created_at), model: isSynthesisModel(row.model) ? row.model : null, reasoningEffort: isReasoningEffort(row.reasoning_effort) ? row.reasoning_effort : null }));
     const turnOrder = new Map(turns.map((turn, index) => [turn.id, index]));
     const messages = rowObjects(db.exec("SELECT id, thread_id, turn_id, role, content, created_at FROM messages")).map((row) => ({ id: asString(row.id), threadId: asString(row.thread_id), turnId: asString(row.turn_id), role: row.role === "assistant" ? "assistant" as const : "user" as const, content: asString(row.content), createdAt: asString(row.created_at) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || (a.role === "user" ? -1 : 1));
     const turnUsage = rowObjects(db.exec("SELECT turn_id, input_tokens, output_tokens, total_tokens, cached_input_tokens, cache_write_tokens, usage_json FROM turn_usage ORDER BY turn_id")).map((row): TurnUsage => ({ turnId: asString(row.turn_id), inputTokens: row.input_tokens == null ? null : asNumber(row.input_tokens), outputTokens: row.output_tokens == null ? null : asNumber(row.output_tokens), totalTokens: row.total_tokens == null ? null : asNumber(row.total_tokens), cachedInputTokens: row.cached_input_tokens == null ? null : asNumber(row.cached_input_tokens), cacheWriteTokens: row.cache_write_tokens == null ? null : asNumber(row.cache_write_tokens), usageJson: asNullableString(row.usage_json) }));
@@ -184,9 +216,6 @@ export class SynthesisDatabase {
   }
 
   async putThread(thread: Thread): Promise<void> { await this.mutate((db) => db.run("INSERT OR REPLACE INTO threads (id, title, created_at, updated_at, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?)", [thread.id, thread.title, thread.createdAt, thread.updatedAt, thread.model, thread.reasoningEffort])); }
-  async updateTurnInference(turnId: string, model: SynthesisModel, reasoningEffort: ReasoningEffort): Promise<void> {
-    await this.mutate((db) => db.run("UPDATE turns SET model = ?, reasoning_effort = ? WHERE id = ?", [model, reasoningEffort, turnId]));
-  }
   async deleteThread(threadId: string): Promise<void> {
     await this.mutate((db) => {
       db.run("DELETE FROM source_snapshots WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?)", [threadId]);

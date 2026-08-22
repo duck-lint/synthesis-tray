@@ -2,20 +2,21 @@ import initSqlJs from "sql.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SynthesisDatabase } from "../src/persistence/database";
+import { makeThread, SynthesisDatabase } from "../src/persistence/database";
 import { newId, nowIso } from "../src/state/ids";
 import { Message, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage } from "../src/state/types";
 
 class MemoryVaultAdapter {
   readonly files = new Map<string, ArrayBuffer>();
   wasmReads = 0;
+  writeCount = 0;
   constructor() {
     const bytes = readFileSync(wasmPath);
     this.files.set(wasmPath, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
   }
   async exists(path: string): Promise<boolean> { return this.files.has(path); }
   async readBinary(path: string): Promise<ArrayBuffer> { if (path === wasmPath) this.wasmReads += 1; const value = this.files.get(path); if (!value) throw new Error(`Missing ${path}`); return value.slice(0); }
-  async writeBinary(path: string, data: ArrayBuffer): Promise<void> { this.files.set(path, data.slice(0)); }
+  async writeBinary(path: string, data: ArrayBuffer): Promise<void> { this.writeCount += 1; this.files.set(path, data.slice(0)); }
 }
 
 const wasmPath = resolve("node_modules/sql.js/dist/sql-wasm.wasm");
@@ -55,7 +56,8 @@ describe("SQLite persistence", () => {
 
   it("commits relational turn/source records and clears active tray", async () => {
     const adapter = new MemoryVaultAdapter();
-    const db = database(adapter, `commit-${newId("test")}`);
+    const name = `commit-${newId("test")}`;
+    const db = database(adapter, name);
     const currentThread = thread();
     const currentTray = [tray("a.md", "A"), tray("b.md", "B")];
     await db.putThread(currentThread);
@@ -72,6 +74,9 @@ describe("SQLite persistence", () => {
     expect(state.sourceSnapshots.map((source) => [source.turnId, source.sourceIndex, source.contentSnapshot])).toEqual([[turnId, 1, "A"], [turnId, 2, "B"]]);
     expect(state.turns[0]).toMatchObject({ model: currentThread.model, reasoningEffort: currentThread.reasoningEffort });
     expect(state.turnUsage).toEqual([usage(turnId)]);
+    await db.close();
+    const reopened = await database(adapter, name).load();
+    expect(reopened.turns[0]).toMatchObject({ model: currentThread.model, reasoningEffort: currentThread.reasoningEffort });
   });
 
   it("persists conversation source identity with the immutable snapshot", async () => {
@@ -147,18 +152,28 @@ describe("SQLite persistence", () => {
     const SQL = await initSqlJs({ locateFile: () => wasmPath });
     const legacy = new SQL.Database();
     legacy.run("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+    legacy.run("CREATE TABLE turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_message_id TEXT NOT NULL, assistant_message_id TEXT NOT NULL, created_at TEXT NOT NULL)");
     legacy.run("INSERT INTO threads VALUES (?, ?, ?, ?)", ["legacy-thread", "Legacy", "2020-01-01", "2020-01-01"]);
+    legacy.run("INSERT INTO turns VALUES (?, ?, ?, ?, ?)", ["legacy-turn", "legacy-thread", "legacy-user", "legacy-assistant", "2020-01-01"]);
     const exported = legacy.export();
     adapter.files.set(dbPath, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
     legacy.close();
 
-    const state = await database(adapter, name).load();
+    const state = await database(adapter, name).load("gpt-5.6-sol", "none", "gpt-5.6-luna");
     expect(state.threads.map((entry) => entry.id)).toEqual(["legacy-thread"]);
-    expect(state.threads[0]).toMatchObject({ model: "gpt-5.6-sol", reasoningEffort: "none" });
+    expect(state.threads[0]).toMatchObject({ model: "gpt-5.6-luna", reasoningEffort: "none" });
+    expect(state.turns[0]).toMatchObject({ model: null, reasoningEffort: null });
+    expect(adapter.writeCount).toBe(1);
     const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(dbPath)));
     expect(inspected.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_usage'")[0].values).toEqual([["turn_usage"]]);
     expect(inspected.exec("PRAGMA table_info(turn_usage)")[0].values.map((row) => row[1])).toContain("cache_write_tokens");
+    expect(inspected.exec("SELECT model, reasoning_effort FROM turns")[0].values).toEqual([[null, null]]);
     inspected.close();
+
+    const reopened = await database(adapter, name).load("gpt-5.6-sol", "none", "gpt-5.6-luna");
+    expect(reopened.turns[0]).toMatchObject({ model: null, reasoningEffort: null });
+    expect(adapter.writeCount).toBe(1);
+    expect(makeThread("new after migration")).toMatchObject({ model: "gpt-5.6-sol", reasoningEffort: "none" });
   });
 
   it("adds cache-write telemetry to an existing turn_usage table", async () => {

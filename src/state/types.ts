@@ -51,8 +51,9 @@ export interface Turn {
   userMessageId: string;
   assistantMessageId: string;
   createdAt: string;
-  model: SynthesisModel;
-  reasoningEffort: ReasoningEffort;
+  /** Null means the historical request configuration is not evidenced. */
+  model: SynthesisModel | null;
+  reasoningEffort: ReasoningEffort | null;
 }
 
 export type ProviderUsage = Record<string, unknown>;

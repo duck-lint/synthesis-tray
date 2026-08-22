@@ -3,11 +3,11 @@ import { captureConversation, captureFolderWholeNotes, captureHeading, captureSe
 import { SynthesisSettingTab } from "./settings";
 import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
-import { addTrayItem, cloneTray, removeTrayItem } from "./state/tray";
+import { addTrayItem, cloneTray, removeTrayItem, TrayRevealTarget } from "./state/tray";
 import { afterSuccessfulTurn, clearedActiveTray, recalledPreviousTray } from "./state/turnLifecycle";
 import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isSynthesisModel, migrateLegacyModel, Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn, SynthesisModel, ReasoningEffort } from "./state/types";
 import { newId, nowIso } from "./state/ids";
-import { makeMessage, titleFromFirstMessage } from "./state/thread";
+import { makeMessage, newThreadInferenceDefaults, titleFromFirstMessage } from "./state/thread";
 import { buildResponsesRequest } from "./openai/requestBuilder";
 import { streamResponse } from "./openai/client";
 import { turnUsageFromProvider } from "./openai/usage";
@@ -22,11 +22,11 @@ export default class SynthesisTrayPlugin extends Plugin {
   lastError: string | null = null;
   private initialization!: Promise<void>;
   private requestController: AbortController | null = null;
-  private legacyModel: SynthesisModel = DEFAULT_MODEL;
+  private legacyMigrationModel: SynthesisModel = DEFAULT_MODEL;
 
   override async onload(): Promise<void> {
     const storedSettings = await this.loadData() as (Partial<PluginSettings> & { model?: unknown }) | null;
-    this.legacyModel = migrateLegacyModel(storedSettings?.model);
+    this.legacyMigrationModel = migrateLegacyModel(storedSettings?.model);
     if (storedSettings?.model && storedSettings.model !== "gpt-5.6" && !isSynthesisModel(storedSettings.model)) {
       new Notice("The previous model setting was not a supported GPT-5.6 tier; new thread configuration defaults to Sol.");
     }
@@ -61,7 +61,7 @@ export default class SynthesisTrayPlugin extends Plugin {
   async saveSettings(): Promise<void> { await this.saveData(this.settings); }
 
   private async initialize(): Promise<void> {
-    this.state = await this.database.load(this.legacyModel, DEFAULT_REASONING_EFFORT, this.legacyModel);
+    this.state = await this.database.load(DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, this.legacyMigrationModel);
     if (this.state.threads.length === 0) {
       const thread = this.newThreadRecord("New synthesis thread");
       this.state.threads = [thread];
@@ -72,9 +72,6 @@ export default class SynthesisTrayPlugin extends Plugin {
       this.state.activeThreadId = this.state.threads[0].id;
       await this.database.setActiveThread(this.state.activeThreadId, this.state.activeTray, this.state.previousTray);
     }
-    // Persist deterministic defaults into rows created before thread-scoped inference existed.
-    for (const thread of this.state.threads) await this.database.putThread(thread);
-    for (const turn of this.state.turns) await this.database.updateTurnInference(turn.id, turn.model, turn.reasoningEffort);
   }
 
   private handleInitializationFailure(error: unknown): void {
@@ -89,7 +86,7 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   private newThreadRecord(title: string): Thread {
     const timestamp = nowIso();
-    return { id: newId("thread"), title, createdAt: timestamp, updatedAt: timestamp, model: this.legacyModel, reasoningEffort: DEFAULT_REASONING_EFFORT };
+    return { id: newId("thread"), title, createdAt: timestamp, updatedAt: timestamp, ...newThreadInferenceDefaults() };
   }
 
   private addCommands(): void {
@@ -181,14 +178,14 @@ export default class SynthesisTrayPlugin extends Plugin {
     if (!await confirmAction(this.app, "Add folder to synthesis", `Add ${files.length} Markdown notes from "${folder.path || folder.name}" to synthesis?`)) return;
     const captureGroup = { id: newId("capture-group"), kind: "folder" as const, label: folder.path || folder.name };
     const items = captureFolderWholeNotes(await Promise.all(files.map(async (file) => ({ path: file.path, extension: file.extension, source: await this.app.vault.read(file) }))), captureGroup);
-    await this.addTrayItems(items, `Added ${items.length} Markdown notes from "${folder.path || folder.name}" to synthesis.`);
+    await this.addTrayItems(items, `Added ${items.length} Markdown notes from "${folder.path || folder.name}" to synthesis.`, { kind: "capture-group", id: captureGroup.id });
   }
 
   private async addTray(item: TrayItem): Promise<void> {
     await this.addTrayItems([item], `Added S${this.state.activeTray.length + 1}: ${item.sourcePath}`);
   }
 
-  private async addTrayItems(items: TrayItem[], successNotice: string): Promise<void> {
+  private async addTrayItems(items: TrayItem[], successNotice: string, deliberateReveal?: TrayRevealTarget): Promise<void> {
     let nextTray = this.state.activeTray;
     let added = 0;
     const addedItems: TrayItem[] = [];
@@ -203,7 +200,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     this.state.activeTray = nextTray;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
     new Notice(successNotice);
-    this.refreshViews({ revealTrayItemId: addedItems.at(-1)?.id });
+    this.refreshViews({ revealTrayTarget: deliberateReveal ?? { kind: "item", id: addedItems.at(-1)!.id } });
   }
 
   async removeTrayItem(id: string): Promise<void> {
@@ -333,7 +330,7 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   usageForTurn(turnId: string) { return this.state.turnUsage.find((usage) => usage.turnId === turnId); }
 
-  private refreshViews(options?: { revealTrayItemId?: string; preserveScroll?: boolean }): void {
+  private refreshViews(options?: { revealTrayTarget?: TrayRevealTarget; preserveScroll?: boolean }): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SYNTHESIS)) {
       const view = leaf.view;
       if (view instanceof SynthesisView) view.refresh(options);

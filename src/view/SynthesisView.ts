@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderer, Menu, Notice, WorkspaceLeaf } from "obsidian";
-import { presentationTrayEntries, TrayPresentationEntry } from "../state/tray";
+import { presentationTrayEntries, TrayPresentationEntry, TrayRevealTarget } from "../state/tray";
 import { Message, SourceSnapshot, TokenBreakdown, TrayItem } from "../state/types";
 import { shouldSendOnEnter } from "./composerKeyboard";
 import { composerPresentation } from "./composerPresentation";
@@ -7,14 +7,16 @@ import { scrollConversationToMessageStart } from "./conversationScroll";
 import { decorateRenderedCitations } from "./citations";
 import { MODEL_OPTIONS, REASONING_OPTIONS } from "./inferenceControls";
 import { sourceManifestEntries } from "./sourceManifest";
+import { captureGroupShouldOpen, trayGroupIsRevealTarget, trayItemIsRevealTarget } from "./trayReveal";
 import { chooseAction, confirmAction, requestText } from "./interactionModal";
-import { asPreviewSource, inferenceSummary, openSourceSnapshotPreview } from "./sourcePreview";
+import { asPreviewSource, openSourceSnapshotPreview } from "./sourcePreview";
+import { inferenceSummary } from "./inferenceSummary";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
 
 interface RefreshOptions {
-  revealTrayItemId?: string;
+  revealTrayTarget?: TrayRevealTarget;
   preserveScroll?: boolean;
 }
 
@@ -29,7 +31,7 @@ export class SynthesisView extends ItemView {
   private streaming = false;
   private streamedAssistant = "";
   private pendingAssistantScrollTurnId: string | null = null;
-  private pendingTrayRevealId: string | null = null;
+  private pendingTrayRevealTarget: TrayRevealTarget | null = null;
   private trayCollapsed = false;
   private trayBasisPx: number | null = null;
   private expandedCaptureGroups = new Set<string>();
@@ -61,11 +63,11 @@ export class SynthesisView extends ItemView {
     const draftWasFocused = document.activeElement === this.draftElement;
     const selectionStart = this.draftElement?.selectionStart ?? null;
     const selectionEnd = this.draftElement?.selectionEnd ?? null;
-    this.pendingTrayRevealId = options.revealTrayItemId ?? null;
+    this.pendingTrayRevealTarget = options.revealTrayTarget ?? null;
     this.render();
     if (preserveScroll) {
       if (conversationScrollTop !== null && this.conversationElement) this.conversationElement.scrollTop = conversationScrollTop;
-      if (trayScrollTop !== null && this.trayElement && !options.revealTrayItemId) this.trayElement.scrollTop = trayScrollTop;
+      if (trayScrollTop !== null && this.trayElement && !options.revealTrayTarget) this.trayElement.scrollTop = trayScrollTop;
     }
     if (draftWasFocused && this.draftElement) {
       this.draftElement.focus();
@@ -191,7 +193,7 @@ export class SynthesisView extends ItemView {
 
     if (targetMessage && this.conversationElement) scrollConversationToMessageStart(this.conversationElement, targetMessage);
     this.pendingAssistantScrollTurnId = null;
-    this.pendingTrayRevealId = null;
+    this.pendingTrayRevealTarget = null;
   }
 
   private createInferenceSelect<T extends string>(container: HTMLElement, label: string, options: Array<{ value: T; label: string }>, selected: T, onChange: (value: T) => void): HTMLSelectElement {
@@ -244,8 +246,13 @@ export class SynthesisView extends ItemView {
       return;
     }
     const groupDetails = container.createEl("details", { cls: "synthesis-tray-group" });
-    groupDetails.open = this.expandedCaptureGroups.has(entry.group.id) || entry.items.length <= 20;
-    if (entry.items.some(({ item }) => item.id === this.pendingTrayRevealId)) groupDetails.open = true;
+    const revealGroup = trayGroupIsRevealTarget(entry.group.id, this.pendingTrayRevealTarget);
+    const revealItem = entry.items.some(({ item }) => trayItemIsRevealTarget(item.id, this.pendingTrayRevealTarget));
+    groupDetails.open = captureGroupShouldOpen(entry.group.id, entry.items.length, this.expandedCaptureGroups, this.pendingTrayRevealTarget);
+    // A folder action reveals its group header. Large groups stay collapsed so
+    // the reveal never lands on the final child of a hundreds-item capture.
+    if (revealGroup) groupDetails.open = entry.items.length <= 20;
+    if (revealItem) groupDetails.open = true;
     groupDetails.ontoggle = () => {
       if (groupDetails.open) this.expandedCaptureGroups.add(entry.group.id);
       else this.expandedCaptureGroups.delete(entry.group.id);
@@ -254,9 +261,8 @@ export class SynthesisView extends ItemView {
     summary.createEl("span", { text: entry.group.label, cls: "synthesis-tray-path" });
     summary.createEl("span", { text: `${entry.items.length} notes`, cls: "synthesis-tray-scope" });
     for (const { item, index } of entry.items) this.renderTrayItem(groupDetails, item, index);
-    if (this.pendingTrayRevealId && entry.items.some(({ item }) => item.id === this.pendingTrayRevealId)) {
-      groupDetails.querySelector<HTMLElement>(`[data-tray-id="${CSS.escape(this.pendingTrayRevealId)}"]`)?.scrollIntoView({ block: "nearest" });
-    }
+    if (revealGroup) window.setTimeout(() => summary.scrollIntoView({ block: "nearest" }), 0);
+    if (revealItem) window.setTimeout(() => groupDetails.querySelector<HTMLElement>(`[data-tray-id="${CSS.escape(this.pendingTrayRevealTarget!.id)}"]`)?.scrollIntoView({ block: "nearest" }), 0);
   }
 
   private renderTrayItem(container: HTMLElement, item: TrayItem, index: number): void {
@@ -272,7 +278,7 @@ export class SynthesisView extends ItemView {
     preview.onclick = () => openSourceSnapshotPreview(this.app, asPreviewSource(item), index + 1, null, null, false);
     const remove = actions.createEl("button", { text: "×", cls: "synthesis-remove", attr: { "aria-label": `Remove S${index + 1}` } });
     remove.onclick = () => void this.plugin.removeTrayItem(item.id);
-    if (item.id === this.pendingTrayRevealId) window.setTimeout(() => row.scrollIntoView({ block: "nearest" }), 0);
+    if (trayItemIsRevealTarget(item.id, this.pendingTrayRevealTarget)) window.setTimeout(() => row.scrollIntoView({ block: "nearest" }), 0);
   }
 
   private renderTokenCount(): void {

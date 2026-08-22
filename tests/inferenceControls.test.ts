@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MODEL_OPTIONS, REASONING_OPTIONS, modelLabel, reasoningLabel } from "../src/view/inferenceControls";
+import { inferenceSummary } from "../src/view/inferenceSummary";
 
 describe("thread inference controls", () => {
   it("exposes the three canonical model tiers", () => {
@@ -10,5 +11,10 @@ describe("thread inference controls", () => {
   it("exposes every accepted reasoning effort value", () => {
     expect(REASONING_OPTIONS.map((option) => option.value)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
     expect(reasoningLabel("xhigh")).toBe("Extra High");
+  });
+
+  it("does not fabricate inference metadata for legacy turns", () => {
+    expect(inferenceSummary(null, null, null, null, null)).toBe("Inference configuration unavailable");
+    expect(inferenceSummary(null, null, 12, 4, null)).toBe("Inference configuration unavailable · 12 input · 4 output");
   });
 });

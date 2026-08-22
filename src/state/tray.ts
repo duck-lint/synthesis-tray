@@ -1,5 +1,9 @@
 import { TrayItem } from "./types";
 
+export type TrayRevealTarget =
+  | { kind: "item"; id: string }
+  | { kind: "capture-group"; id: string };
+
 export function trayIdentity(item: Pick<TrayItem, "sourcePath" | "scope" | "headingPath" | "contentSnapshot" | "conversationThreadId" | "conversationTitle">): string {
   return JSON.stringify([item.sourcePath, item.scope, item.headingPath, item.contentSnapshot, item.conversationThreadId ?? null, item.conversationTitle ?? null]);
 }

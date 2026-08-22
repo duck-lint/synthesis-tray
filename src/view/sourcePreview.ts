@@ -1,6 +1,5 @@
 import { App, Modal, TFile } from "obsidian";
-import { ReasoningEffort, Scope, SynthesisModel, TrayItem } from "../state/types";
-import { modelLabel, reasoningLabel } from "./inferenceControls";
+import { Scope, TrayItem } from "../state/types";
 import { snapshotLines } from "./snapshotLines";
 
 export interface PreviewSource {
@@ -63,9 +62,4 @@ function readableScope(scope: Scope): string {
 
 export function asPreviewSource(item: TrayItem): PreviewSource {
   return item;
-}
-
-export function inferenceSummary(model: SynthesisModel, effort: ReasoningEffort, inputTokens: number | null, outputTokens: number | null, cachedInputTokens: number | null): string {
-  const usage = inputTokens === null && outputTokens === null ? "" : ` · ${inputTokens === null ? "?" : inputTokens.toLocaleString()} input · ${outputTokens === null ? "?" : outputTokens.toLocaleString()} output${cachedInputTokens === null ? "" : ` · ${cachedInputTokens.toLocaleString()} cached`}`;
-  return `${modelLabel(model)} · ${reasoningLabel(effort)}${usage}`;
 }
