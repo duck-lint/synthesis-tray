@@ -46,6 +46,21 @@ export class SynthesisSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName("Response verbosity")
+      .setDesc("Controls the default level of detail in model responses and is sent as the Responses API text.verbosity parameter.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("low", "Low")
+        .addOption("medium", "Medium")
+        .addOption("high", "High")
+        .setValue(this.plugin.settings.verbosity)
+        .onChange(async (value) => {
+          if (value === "low" || value === "medium" || value === "high") {
+            this.plugin.settings.verbosity = value;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
       .setName("Prompt caching")
       .setDesc("Allow OpenAI to cache stable request prefixes. The system prompt remains in every request.")
       .addToggle((toggle) => toggle

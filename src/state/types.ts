@@ -3,11 +3,13 @@ export type MessageRole = "user" | "assistant";
 
 export type SynthesisModel = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type Verbosity = "low" | "medium" | "high";
 
-export const DEFAULT_MODEL: SynthesisModel = "gpt-5.6-sol";
-// The pre-amendment request had no explicit reasoning control; none is the least
-// surprising deterministic default while users can opt into stronger effort.
-export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
+export const DEFAULT_MODEL: SynthesisModel = "gpt-5.6-luna";
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
+/** Former global default used only when interpreting an old thread row. */
+export const LEGACY_DEFAULT_MODEL: SynthesisModel = "gpt-5.6-sol";
+export const LEGACY_DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
 
 export interface CaptureGroup {
   id: string;
@@ -62,6 +64,8 @@ export interface TurnUsage {
   turnId: string;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** A subset of outputTokens, when the provider reports the breakdown. */
+  reasoningTokens: number | null;
   totalTokens: number | null;
   cachedInputTokens: number | null;
   cacheWriteTokens: number | null;
@@ -113,10 +117,13 @@ agreement where the sources differ.
 When grounding a claim in selected material, use the supplied source
 identifiers such as [S1], [S2], and [S3].
 
-When grounding a specific passage, prefer line-aware citations such as
-[S1:L42-L48] or [S3:L7], where line numbers refer to the numbered source
-snapshot supplied for this turn. Plain [S1] remains valid when the entire
-source is relevant. Do not require a citation in every sentence.
+When a claim is grounded in a specific passage or localized region of a
+selected source, cite the narrowest useful snapshot-relative line or line
+range, such as [S1:L42-L48] or [S3:L7]. Line numbers refer only to the
+numbered source snapshot supplied for this turn; never invent line numbers.
+Use plain [S1] only for a genuinely source-wide claim where no narrower
+passage is the appropriate evidence. Put citations adjacent to the claim.
+Do not require a citation in every sentence or add citation noise.
 
 Do not infer that something is absent from the user's vault merely because
 it was not included in the selected sources for this turn.`;
@@ -126,6 +133,7 @@ export interface PluginSettings {
   secretName: string;
   systemPrompt: string;
   maxOutputTokens: number;
+  verbosity: Verbosity;
   promptCachingEnabled: boolean;
 }
 
@@ -133,6 +141,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   secretName: "",
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   maxOutputTokens: 4096,
+  verbosity: "medium",
   promptCachingEnabled: true,
 };
 
@@ -144,9 +153,13 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
 }
 
+export function isVerbosity(value: unknown): value is Verbosity {
+  return value === "low" || value === "medium" || value === "high";
+}
+
 /** Migrate only the legacy supported alias; unrelated arbitrary IDs are not reinterpreted. */
 export function migrateLegacyModel(value: unknown): SynthesisModel {
   if (value === "gpt-5.6" || value === "gpt-5.6-sol") return "gpt-5.6-sol";
   if (isSynthesisModel(value)) return value;
-  return DEFAULT_MODEL;
+  return LEGACY_DEFAULT_MODEL;
 }

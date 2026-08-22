@@ -5,13 +5,13 @@ import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
 import { addTrayItem, cloneTray, removeTrayItem, TrayRevealTarget } from "./state/tray";
 import { afterSuccessfulTurn, clearedActiveTray, recalledPreviousTray } from "./state/turnLifecycle";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isSynthesisModel, migrateLegacyModel, Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn, SynthesisModel, ReasoningEffort } from "./state/types";
+import { LEGACY_DEFAULT_MODEL, LEGACY_DEFAULT_REASONING_EFFORT, isSynthesisModel, migrateLegacyModel, Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn, SynthesisModel, ReasoningEffort } from "./state/types";
 import { newId, nowIso } from "./state/ids";
 import { makeMessage, newThreadInferenceDefaults, titleFromFirstMessage } from "./state/thread";
 import { buildResponsesRequest } from "./openai/requestBuilder";
 import { streamResponse } from "./openai/client";
 import { turnUsageFromProvider } from "./openai/usage";
-import { countNextRequest } from "./tokens/tokenizer";
+import { TokenCountCache } from "./tokens/tokenizer";
 import { VIEW_TYPE_SYNTHESIS, SynthesisView } from "./view/SynthesisView";
 import { confirmAction } from "./view/interactionModal";
 
@@ -22,13 +22,16 @@ export default class SynthesisTrayPlugin extends Plugin {
   lastError: string | null = null;
   private initialization!: Promise<void>;
   private requestController: AbortController | null = null;
-  private legacyMigrationModel: SynthesisModel = DEFAULT_MODEL;
+  private legacyMigrationModel: SynthesisModel = LEGACY_DEFAULT_MODEL;
+  private readonly tokenCounts = new TokenCountCache();
+  private conversationRevision = 0;
+  private trayRevision = 0;
 
   override async onload(): Promise<void> {
     const storedSettings = await this.loadData() as (Partial<PluginSettings> & { model?: unknown }) | null;
     this.legacyMigrationModel = migrateLegacyModel(storedSettings?.model);
     if (storedSettings?.model && storedSettings.model !== "gpt-5.6" && !isSynthesisModel(storedSettings.model)) {
-      new Notice("The previous model setting was not a supported GPT-5.6 tier; new thread configuration defaults to Sol.");
+      new Notice("The previous model setting was not a supported GPT-5.6 tier; new thread configuration defaults to Luna · High.");
     }
     this.settings = mergeSettings(storedSettings);
     await this.saveSettings();
@@ -58,10 +61,13 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   async ready(): Promise<void> { await this.initialization; }
 
-  async saveSettings(): Promise<void> { await this.saveData(this.settings); }
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+    if (this.state) this.refreshViews();
+  }
 
   private async initialize(): Promise<void> {
-    this.state = await this.database.load(DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, this.legacyMigrationModel);
+    this.state = await this.database.load(LEGACY_DEFAULT_MODEL, LEGACY_DEFAULT_REASONING_EFFORT, this.legacyMigrationModel);
     if (this.state.threads.length === 0) {
       const thread = this.newThreadRecord("New synthesis thread");
       this.state.threads = [thread];
@@ -132,7 +138,10 @@ export default class SynthesisTrayPlugin extends Plugin {
   }
 
   tokenBreakdown(threadId: string, draft: string): TokenBreakdown {
-    return countNextRequest(this.settings.systemPrompt, this.messagesFor(threadId), this.state.activeTray, draft);
+    this.tokenCounts.updateSystem(this.settings.systemPrompt);
+    this.tokenCounts.updateConversation(threadId, this.conversationRevision, this.messagesFor(threadId));
+    this.tokenCounts.updateTray(this.trayRevision, this.state.activeTray);
+    return this.tokenCounts.breakdown(draft, threadId);
   }
 
   async addSelection(view: MarkdownView, editor: Editor): Promise<void> {
@@ -198,6 +207,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     }
     if (added === 0) return void new Notice("That exact snapshot is already in the synthesis tray.");
     this.state.activeTray = nextTray;
+    this.trayRevision += 1;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
     new Notice(successNotice);
     this.refreshViews({ revealTrayTarget: deliberateReveal ?? { kind: "item", id: addedItems.at(-1)!.id } });
@@ -205,6 +215,7 @@ export default class SynthesisTrayPlugin extends Plugin {
 
   async removeTrayItem(id: string): Promise<void> {
     this.state.activeTray = removeTrayItem(this.state.activeTray, id);
+    this.trayRevision += 1;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
     this.refreshViews();
   }
@@ -216,6 +227,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     const nextTrayState = clearedActiveTray(this.state);
     this.state.activeTray = nextTrayState.activeTray;
     this.state.previousTray = nextTrayState.previousTray;
+    this.trayRevision += 1;
     try {
       await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
     } catch (error) {
@@ -230,6 +242,7 @@ export default class SynthesisTrayPlugin extends Plugin {
   async recallPreviousTray(): Promise<void> {
     if (this.state.previousTray.length === 0) return;
     this.state.activeTray = recalledPreviousTray(this.state).activeTray;
+    this.trayRevision += 1;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);
     this.refreshViews();
   }
@@ -261,6 +274,7 @@ export default class SynthesisTrayPlugin extends Plugin {
       const updatedThread = { ...thread, title: this.messagesFor(thread.id).length === 0 ? titleFromFirstMessage(draft) : thread.title, updatedAt: nowIso() };
       await this.database.commitTurn(updatedThread, user, assistant, turn, sources, trayForTurn, usage ?? undefined);
       this.state.messages = [...this.state.messages, user, assistant];
+      this.conversationRevision += 1;
       this.state.turns = [...this.state.turns, turn];
       if (usage) this.state.turnUsage = [...this.state.turnUsage, usage];
       this.state.sourceSnapshots = [...this.state.sourceSnapshots, ...sources];
@@ -268,6 +282,7 @@ export default class SynthesisTrayPlugin extends Plugin {
       const nextTrayState = afterSuccessfulTurn(trayForTurn);
       this.state.previousTray = nextTrayState.previousTray;
       this.state.activeTray = nextTrayState.activeTray;
+      this.trayRevision += 1;
       return turn;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) this.lastError = error instanceof Error ? error.message : "Synthesis request failed.";
@@ -283,7 +298,10 @@ export default class SynthesisTrayPlugin extends Plugin {
     const thread = this.newThreadRecord("New synthesis thread");
     this.state.threads = [...this.state.threads, thread];
     this.state.activeThreadId = thread.id;
-    if (clearTray) this.state.activeTray = [];
+    if (clearTray) {
+      this.state.activeTray = [];
+      this.trayRevision += 1;
+    }
     await this.database.putThread(thread);
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, thread.id);
     this.refreshViews({ preserveScroll: false });
@@ -320,6 +338,7 @@ export default class SynthesisTrayPlugin extends Plugin {
     const turnIds = new Set(this.state.turns.filter((turn) => turn.threadId === threadId).map((turn) => turn.id));
     this.state.turns = this.state.turns.filter((turn) => turn.threadId !== threadId);
     this.state.turnUsage = this.state.turnUsage.filter((usage) => !turnIds.has(usage.turnId));
+    this.conversationRevision += 1;
     this.state.sourceSnapshots = this.state.sourceSnapshots.filter((source) => !turnIds.has(source.turnId));
     if (this.state.activeThreadId === threadId) this.state.activeThreadId = this.state.threads[0].id;
     await this.database.setMeta(this.state.activeTray, this.state.previousTray, this.state.activeThreadId);

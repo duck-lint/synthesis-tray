@@ -23,7 +23,7 @@ const wasmPath = resolve("node_modules/sql.js/dist/sql-wasm.wasm");
 function database(adapter: MemoryVaultAdapter, name: string): SynthesisDatabase { return new SynthesisDatabase(adapter, `${name}/conversations.sqlite3`, wasmPath); }
 function thread(id = "thread-1"): Thread { return { id, title: "Thread", createdAt: nowIso(), updatedAt: nowIso(), model: "gpt-5.6-sol", reasoningEffort: "medium" }; }
 function tray(path: string, content: string): TrayItem { return { id: newId("tray"), sourcePath: path, scope: "whole_note", headingPath: null, contentSnapshot: content, addedAt: nowIso() }; }
-function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40, cacheWriteTokens: 25, usageJson: '{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":25}}' }; }
+function usage(turnId: string): TurnUsage { return { turnId, inputTokens: 100, outputTokens: 20, reasoningTokens: 7, totalTokens: 120, cachedInputTokens: 40, cacheWriteTokens: 25, usageJson: '{"input_tokens":100,"output_tokens":20,"output_tokens_details":{"reasoning_tokens":7},"total_tokens":120,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":25}}' }; }
 
 describe("SQLite persistence", () => {
   it("proves sql.js export during an open transaction includes uncommitted rows", async () => {
@@ -173,7 +173,7 @@ describe("SQLite persistence", () => {
     const reopened = await database(adapter, name).load("gpt-5.6-sol", "none", "gpt-5.6-luna");
     expect(reopened.turns[0]).toMatchObject({ model: null, reasoningEffort: null });
     expect(adapter.writeCount).toBe(1);
-    expect(makeThread("new after migration")).toMatchObject({ model: "gpt-5.6-sol", reasoningEffort: "none" });
+    expect(makeThread("new after migration")).toMatchObject({ model: "gpt-5.6-luna", reasoningEffort: "high" });
   });
 
   it("adds cache-write telemetry to an existing turn_usage table", async () => {
@@ -183,6 +183,7 @@ describe("SQLite persistence", () => {
     const SQL = await initSqlJs({ locateFile: () => wasmPath });
     const legacy = new SQL.Database();
     legacy.run("CREATE TABLE turn_usage (turn_id TEXT PRIMARY KEY, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, cached_input_tokens INTEGER, usage_json TEXT)");
+    legacy.run("INSERT INTO turn_usage VALUES (?, ?, ?, ?, ?, ?)", ["historical", 10, 4, 14, 2, '{"output_tokens_details":{"reasoning_tokens":3}}']);
     const exported = legacy.export();
     adapter.files.set(dbPath, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
     legacy.close();
@@ -191,6 +192,8 @@ describe("SQLite persistence", () => {
     const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(dbPath)));
     expect(inspected.exec("PRAGMA table_info(turn_usage)")[0].values.map((row) => row[1])).toContain("cache_write_tokens");
     inspected.close();
+    const loaded = await database(adapter, name).load();
+    expect(loaded.turnUsage).toMatchObject([{ turnId: "historical", reasoningTokens: 3 }]);
   });
 
   it("does not create completed usage for a turn committed without provider usage", async () => {

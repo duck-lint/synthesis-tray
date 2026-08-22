@@ -11,6 +11,7 @@ import { captureGroupShouldOpen, trayGroupIsRevealTarget, trayItemIsRevealTarget
 import { chooseAction, confirmAction, requestText } from "./interactionModal";
 import { asPreviewSource, openSourceSnapshotPreview } from "./sourcePreview";
 import { inferenceSummary } from "./inferenceSummary";
+import { insertAssistantReference, selectionIsInsideOneMessage } from "./assistantReference";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -34,7 +35,8 @@ export class SynthesisView extends ItemView {
   private pendingTrayRevealTarget: TrayRevealTarget | null = null;
   private trayCollapsed = false;
   private trayBasisPx: number | null = null;
-  private expandedCaptureGroups = new Set<string>();
+  /** Tri-state presentation preference: absent means apply the size default. */
+  private captureGroupPreferences = new Map<string, boolean>();
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: SynthesisTrayPlugin) {
     super(leaf);
@@ -82,6 +84,8 @@ export class SynthesisView extends ItemView {
     const state = this.plugin.state;
     const thread = state.threads.find((candidate) => candidate.id === state.activeThreadId) ?? state.threads[0];
     if (!thread) return;
+    const liveGroupIds = new Set(state.activeTray.flatMap((item) => item.captureGroup ? [item.captureGroup.id] : []));
+    for (const groupId of this.captureGroupPreferences.keys()) if (!liveGroupIds.has(groupId)) this.captureGroupPreferences.delete(groupId);
 
     const header = root.createDiv("synthesis-header");
     header.createEl("span", { text: "SYNTHESIS", cls: "synthesis-title" });
@@ -218,6 +222,7 @@ export class SynthesisView extends ItemView {
     item.createDiv({ text: message.role === "user" ? "You" : "Assistant", cls: "synthesis-message-role" });
     if (message.role === "assistant") {
       const markdown = item.createDiv("synthesis-message-content");
+      item.addEventListener("contextmenu", (event) => this.showAssistantReferenceMenu(event, markdown));
       void MarkdownRenderer.render(this.app, message.content, markdown, "", this.plugin).then(() => {
         decorateRenderedCitations(markdown, (citation) => {
           const source = this.plugin.state.sourceSnapshots.find((candidate) => candidate.turnId === message.turnId && candidate.sourceIndex === citation.sourceIndex);
@@ -228,10 +233,27 @@ export class SynthesisView extends ItemView {
       if (turn) {
         const usage = this.plugin.usageForTurn(message.turnId);
         const metadata = item.createDiv("synthesis-message-metadata");
-        metadata.setText(inferenceSummary(turn.model, turn.reasoningEffort, usage?.inputTokens ?? null, usage?.outputTokens ?? null, usage?.cachedInputTokens ?? null));
+        metadata.setText(inferenceSummary(turn.model, turn.reasoningEffort, usage?.inputTokens ?? null, usage?.outputTokens ?? null, usage?.reasoningTokens ?? null, usage?.cachedInputTokens ?? null));
       }
     } else item.createDiv({ text: message.content, cls: "synthesis-message-content" });
     return item;
+  }
+
+  private showAssistantReferenceMenu(event: MouseEvent, messageContent: HTMLElement): void {
+    const selection = window.getSelection();
+    if (!selectionIsInsideOneMessage(selection, messageContent)) return;
+    const excerpt = selection!.toString().trim();
+    event.preventDefault();
+    const menu = new Menu();
+    menu.addItem((item) => item.setTitle("Reference in next message").setIcon("quote").onClick(() => {
+      this.draft = insertAssistantReference(this.draft, excerpt);
+      // Rebuild through the existing boundary so the passage being referenced,
+      // tray position, and any draft selection remain stable while the quote
+      // is inserted into the composer.
+      this.refresh({ preserveScroll: true });
+      this.draftElement?.focus();
+    }));
+    menu.showAtMouseEvent(event);
   }
 
   private renderStreamingMessage(container: HTMLElement): void {
@@ -248,14 +270,13 @@ export class SynthesisView extends ItemView {
     const groupDetails = container.createEl("details", { cls: "synthesis-tray-group" });
     const revealGroup = trayGroupIsRevealTarget(entry.group.id, this.pendingTrayRevealTarget);
     const revealItem = entry.items.some(({ item }) => trayItemIsRevealTarget(item.id, this.pendingTrayRevealTarget));
-    groupDetails.open = captureGroupShouldOpen(entry.group.id, entry.items.length, this.expandedCaptureGroups, this.pendingTrayRevealTarget);
+    groupDetails.open = captureGroupShouldOpen(entry.group.id, entry.items.length, this.captureGroupPreferences, this.pendingTrayRevealTarget);
     // A folder action reveals its group header. Large groups stay collapsed so
     // the reveal never lands on the final child of a hundreds-item capture.
     if (revealGroup) groupDetails.open = entry.items.length <= 20;
     if (revealItem) groupDetails.open = true;
     groupDetails.ontoggle = () => {
-      if (groupDetails.open) this.expandedCaptureGroups.add(entry.group.id);
-      else this.expandedCaptureGroups.delete(entry.group.id);
+      this.captureGroupPreferences.set(entry.group.id, groupDetails.open);
     };
     const summary = groupDetails.createEl("summary", { cls: "synthesis-tray-group-summary" });
     summary.createEl("span", { text: entry.group.label, cls: "synthesis-tray-path" });
