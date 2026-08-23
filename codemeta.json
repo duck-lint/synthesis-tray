@@ -1,0 +1,30 @@
+{
+  "@context": "https://w3id.org/codemeta/3.1",
+  "@type": "SoftwareSourceCode",
+  "name": "Synthesis Tray",
+  "description": "Explicit-context synthesis for Obsidian: select exactly what the model sees, preserve source snapshots, and synthesize with OpenAI.",
+  "codeRepository": "https://github.com/duck-lint/Synthesis-Tray",
+  "license": "https://spdx.org/licenses/Apache-2.0",
+  "programmingLanguage": "TypeScript",
+  "runtimePlatform": "Obsidian",
+  "applicationCategory": "Knowledge Management",
+  "keywords": [
+    "Obsidian",
+    "large language models",
+    "context engineering",
+    "knowledge synthesis",
+    "provenance",
+    "human-in-the-loop",
+    "personal knowledge management"
+  ],
+  "author": {
+    "@type": "Person",
+    "name": "duck-lint",
+    "url": "https://github.com/duck-lint"
+  },
+  "maintainer": {
+    "@type": "Person",
+    "name": "duck-lint",
+    "url": "https://github.com/duck-lint"
+  }
+}
