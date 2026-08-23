@@ -166,6 +166,8 @@ When a claim is grounded in a specific passage or localized region of a
 selected source, cite the narrowest useful snapshot-relative line or line
 range, such as [S1:L42-L48] or [S3:L7]. Line numbers refer only to the
 numbered source snapshot supplied for this turn; never invent line numbers.
+When several passages support one claim, multiple citations may be grouped
+inside one bracket with semicolons, such as [S1:L82-L83; S1:L103-L110].
 Use plain [S1] only for a genuinely source-wide claim where no narrower
 passage is the appropriate evidence. Put citations adjacent to the claim.
 Do not require a citation in every sentence or add citation noise.

@@ -16,8 +16,20 @@ describe("historical citation presentation", () => {
     expect(parseCitationReferences("Supported by [S1].")[0]).toEqual({ sourceIndex: 1, lineStart: null, lineEnd: null, raw: "[S1]" });
   });
 
+  it("parses semicolon-grouped citations into individually inspectable references", () => {
+    expect(parseCitationReferences("Supported by [S1:L82-L83; S1:L103-L110].")).toEqual([
+      { sourceIndex: 1, lineStart: 82, lineEnd: 83, raw: "[S1:L82-L83]" },
+      { sourceIndex: 1, lineStart: 103, lineEnd: 110, raw: "[S1:L103-L110]" },
+    ]);
+    expect(parseCitationReferences("[S1:L82-L83;S2:L4]")).toEqual([
+      { sourceIndex: 1, lineStart: 82, lineEnd: 83, raw: "[S1:L82-L83]" },
+      { sourceIndex: 2, lineStart: 4, lineEnd: 4, raw: "[S2:L4]" },
+    ]);
+  });
+
   it("requires narrow localized citations without requiring citation noise", () => {
     expect(DEFAULT_SYSTEM_PROMPT).toContain("cite the narrowest useful snapshot-relative line or line");
+    expect(DEFAULT_SYSTEM_PROMPT).toContain("[S1:L82-L83; S1:L103-L110]");
     expect(DEFAULT_SYSTEM_PROMPT).toContain("Use plain [S1] only for a genuinely source-wide claim");
   });
 
