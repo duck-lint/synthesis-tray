@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderer, Menu, Notice, WorkspaceLeaf } from "obsidian";
-import { presentationTrayEntries, TrayPresentationEntry, TrayRevealTarget } from "../state/tray";
+import { presentationTrayEntriesForMatches, TrayPresentationEntry, TrayRevealTarget } from "../state/tray";
 import { Message, SourceSnapshot, TokenBreakdown, TrayItem } from "../state/types";
 import { shouldSendOnEnter } from "./composerKeyboard";
 import { composerPresentation } from "./composerPresentation";
@@ -12,6 +12,12 @@ import { chooseAction, confirmAction, requestText } from "./interactionModal";
 import { asPreviewSource, openSourceSnapshotPreview } from "./sourcePreview";
 import { inferenceSummary } from "./inferenceSummary";
 import { insertAssistantReference, selectionIsInsideOneMessage } from "./assistantReference";
+import { filterMessagesByQuery, filterTrayByQuery } from "./search";
+import { tokenBarSegments } from "../tokens/tokenBar";
+import { compareLinkedContexts, compareTrays } from "./trayComparison";
+import { confirmRecallWithComparison } from "./recallModal";
+import { historicalComparisonsFor } from "./sourceManifest";
+import { openSnapshotComparisonChooser } from "./snapshotDiffModal";
 import type { SynthesisTrayPlugin } from "../main";
 
 export const VIEW_TYPE_SYNTHESIS = "synthesis-tray-view";
@@ -38,6 +44,9 @@ export class SynthesisView extends ItemView {
   /** Tri-state presentation preference: absent means apply the size default. */
   private captureGroupPreferences = new Map<string, boolean>();
   private linkedExpansion = new Set<string>();
+  private traySearchQuery = "";
+  private conversationSearchQuery = "";
+  private conversationSearchThreadId: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: SynthesisTrayPlugin) {
     super(leaf);
@@ -66,6 +75,9 @@ export class SynthesisView extends ItemView {
     const draftWasFocused = document.activeElement === this.draftElement;
     const selectionStart = this.draftElement?.selectionStart ?? null;
     const selectionEnd = this.draftElement?.selectionEnd ?? null;
+    const focusedSearchId = document.activeElement instanceof HTMLInputElement && document.activeElement.dataset.synthesisSearch === "true" ? document.activeElement.id : null;
+    const searchSelectionStart = focusedSearchId ? (document.activeElement as HTMLInputElement).selectionStart : null;
+    const searchSelectionEnd = focusedSearchId ? (document.activeElement as HTMLInputElement).selectionEnd : null;
     this.pendingTrayRevealTarget = options.revealTrayTarget ?? null;
     this.render();
     if (preserveScroll) {
@@ -76,6 +88,13 @@ export class SynthesisView extends ItemView {
       this.draftElement.focus();
       if (selectionStart !== null && selectionEnd !== null) this.draftElement.setSelectionRange(selectionStart, selectionEnd);
     }
+    if (focusedSearchId) {
+      const search = this.containerEl.querySelector<HTMLInputElement>(`#${CSS.escape(focusedSearchId)}`);
+      if (search) {
+        search.focus();
+        if (searchSelectionStart !== null && searchSelectionEnd !== null) search.setSelectionRange(searchSelectionStart, searchSelectionEnd);
+      }
+    }
   }
 
   private render(): void {
@@ -85,6 +104,10 @@ export class SynthesisView extends ItemView {
     const state = this.plugin.state;
     const thread = state.threads.find((candidate) => candidate.id === state.activeThreadId) ?? state.threads[0];
     if (!thread) return;
+    if (this.conversationSearchThreadId !== thread.id) {
+      this.conversationSearchQuery = "";
+      this.conversationSearchThreadId = thread.id;
+    }
     const liveGroupIds = new Set(state.activeTray.flatMap((item) => item.captureGroup ? [item.captureGroup.id] : []));
     for (const groupId of this.captureGroupPreferences.keys()) if (!liveGroupIds.has(groupId)) this.captureGroupPreferences.delete(groupId);
 
@@ -107,20 +130,35 @@ export class SynthesisView extends ItemView {
     newButton.onclick = () => void this.createThread();
     const actionsButton = header.createEl("button", { text: "⋯", attr: { "aria-label": "Thread actions" } });
     actionsButton.onclick = (event) => this.showThreadMenu(event, thread.id);
+    const conversationSearch = header.createEl("input", { type: "search", cls: "synthesis-search-input synthesis-conversation-search", attr: { placeholder: "Search messages…", "aria-label": "Search current conversation messages", "data-synthesis-search": "true" } });
+    conversationSearch.id = `synthesis-conversation-search-${thread.id}`;
+    conversationSearch.value = this.conversationSearchQuery;
+    conversationSearch.oninput = () => { this.conversationSearchQuery = conversationSearch.value; this.refresh({ preserveScroll: true }); };
+    conversationSearch.onkeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.conversationSearchQuery = "";
+        conversationSearch.value = "";
+        this.refresh({ preserveScroll: true });
+      }
+      if (event.key === "Enter") event.preventDefault();
+    };
 
     this.conversationElement = root.createDiv("synthesis-conversation");
     const targetTurnId = this.pendingAssistantScrollTurnId;
     let targetMessage: HTMLElement | null = null;
-    const messages = this.plugin.messagesFor(thread.id);
+    const allMessages = this.plugin.messagesFor(thread.id);
+    const messages = filterMessagesByQuery(allMessages, this.conversationSearchQuery);
     if (messages.length === 0 && !this.streaming) {
-      this.conversationElement.createDiv({ text: "Start with a question, then add authored material when you want it in the next synthesis.", cls: "synthesis-conversation-empty" });
+      const emptyText = this.conversationSearchQuery.trim() ? `No conversation messages match “${this.conversationSearchQuery}”.` : "Start with a question, then add authored material when you want it in the next synthesis.";
+      this.conversationElement.createDiv({ text: emptyText, cls: "synthesis-conversation-empty" });
     }
     for (const message of messages) {
       const element = this.renderMessage(this.conversationElement, message);
       if (message.role === "assistant") this.renderSourceManifest(this.conversationElement, message.turnId);
       if (targetTurnId && message.role === "assistant" && message.turnId === targetTurnId) targetMessage = element;
     }
-    if (this.streaming) this.renderStreamingMessage(this.conversationElement);
+    if (this.streaming && !this.conversationSearchQuery.trim()) this.renderStreamingMessage(this.conversationElement);
 
     const composer = root.createDiv("synthesis-composer");
     const presentation = composerPresentation(this.streaming, this.draft, Boolean(this.plugin.settings.secretName));
@@ -161,7 +199,8 @@ export class SynthesisView extends ItemView {
 
     const trayHeader = trayPanel.createDiv("synthesis-tray-header");
     const trayTitle = trayHeader.createDiv("synthesis-tray-title-block");
-    trayTitle.createEl("span", { text: `NEXT SYNTHESIS CONTEXT · ${state.activeTray.length} source${state.activeTray.length === 1 ? "" : "s"}`, cls: "synthesis-section-title" });
+    const trayMatches = filterTrayByQuery(state.activeTray, this.traySearchQuery);
+    trayTitle.createEl("span", { text: `NEXT SYNTHESIS CONTEXT · ${state.activeTray.length} source${state.activeTray.length === 1 ? "" : "s"}${this.traySearchQuery.trim() ? ` · ${trayMatches.length} match${trayMatches.length === 1 ? "" : "es"}` : ""}`, cls: "synthesis-section-title" });
     trayTitle.createEl("span", { text: "Shared across threads", cls: "synthesis-tray-shared" });
     const trayHeaderActions = trayHeader.createDiv("synthesis-tray-header-actions");
     const conversationSelect = trayHeaderActions.createEl("select", { cls: "synthesis-conversation-select", attr: { "aria-label": "Add conversation snapshot" } });
@@ -172,6 +211,19 @@ export class SynthesisView extends ItemView {
       const selectedThreadId = conversationSelect.value;
       conversationSelect.value = "";
       if (selectedThreadId) await this.plugin.addConversationToTray(selectedThreadId);
+    };
+    const traySearch = trayHeaderActions.createEl("input", { type: "search", cls: "synthesis-search-input synthesis-tray-search", attr: { placeholder: "Search tray…", "aria-label": "Search active synthesis tray", "data-synthesis-search": "true" } });
+    traySearch.id = `synthesis-tray-search-${thread.id}`;
+    traySearch.value = this.traySearchQuery;
+    traySearch.oninput = () => { this.traySearchQuery = traySearch.value; this.refresh({ preserveScroll: true }); };
+    traySearch.onkeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.traySearchQuery = "";
+        traySearch.value = "";
+        this.refresh({ preserveScroll: true });
+      }
+      if (event.key === "Enter") event.preventDefault();
     };
     const collapse = trayHeaderActions.createEl("button", { text: this.trayCollapsed ? "Expand" : "Collapse", cls: "mod-muted", attr: { "aria-expanded": String(!this.trayCollapsed), "aria-label": this.trayCollapsed ? "Expand synthesis context" : "Collapse synthesis context" } });
     collapse.onclick = () => { this.trayCollapsed = !this.trayCollapsed; this.render(); };
@@ -191,8 +243,10 @@ export class SynthesisView extends ItemView {
       const trayList = trayPanel.createDiv("synthesis-tray-list");
       if (state.activeTray.length === 0) {
         trayList.createDiv({ text: "No selected context. Add a selection, heading, note, or folder from an editor or file-explorer context menu. Nothing enters synthesis automatically.", cls: "synthesis-empty" });
+      } else if (trayMatches.length === 0) {
+        trayList.createDiv({ text: `No tray sources match “${this.traySearchQuery}”.`, cls: "synthesis-empty" });
       } else {
-        for (const entry of presentationTrayEntries(state.activeTray)) this.renderTrayEntry(trayList, entry);
+        for (const entry of presentationTrayEntriesForMatches(state.activeTray, trayMatches)) this.renderTrayEntry(trayList, entry);
       }
     }
 
@@ -271,13 +325,15 @@ export class SynthesisView extends ItemView {
     const groupDetails = container.createEl("details", { cls: "synthesis-tray-group" });
     const revealGroup = trayGroupIsRevealTarget(entry.group.id, this.pendingTrayRevealTarget);
     const revealItem = entry.items.some(({ item }) => trayItemIsRevealTarget(item.id, this.pendingTrayRevealTarget));
-    groupDetails.open = captureGroupShouldOpen(entry.group.id, entry.items.length, this.captureGroupPreferences, this.pendingTrayRevealTarget);
+    const searching = this.traySearchQuery.trim().length > 0;
+    groupDetails.open = searching || captureGroupShouldOpen(entry.group.id, entry.items.length, this.captureGroupPreferences, this.pendingTrayRevealTarget);
     // A folder action reveals its group header. Large groups stay collapsed so
     // the reveal never lands on the final child of a hundreds-item capture.
-    if (revealGroup) groupDetails.open = entry.items.length <= 20;
+    if (!searching && revealGroup) groupDetails.open = entry.items.length <= 20;
     if (revealItem) groupDetails.open = true;
+    if (searching) groupDetails.open = true;
     groupDetails.ontoggle = () => {
-      this.captureGroupPreferences.set(entry.group.id, groupDetails.open);
+      if (!searching) this.captureGroupPreferences.set(entry.group.id, groupDetails.open);
     };
     const summary = groupDetails.createEl("summary", { cls: "synthesis-tray-group-summary" });
     summary.createEl("span", { text: entry.group.label, cls: "synthesis-tray-path" });
@@ -378,6 +434,15 @@ export class SynthesisView extends ItemView {
     const breakdown = this.plugin.tokenBreakdown(thread.id, this.draft);
     this.tokenElement.setText(`≈ ${breakdown.total.toLocaleString()} next-request tokens`);
     this.tokenBreakdownElement.empty();
+    const bar = this.tokenBreakdownElement.createDiv("synthesis-token-bar");
+    bar.setAttr("role", "img");
+    bar.setAttr("aria-label", breakdown.total > 0 ? `Next-request token composition: ${breakdown.total.toLocaleString()} total tokens.` : "Next-request token composition is empty.");
+    for (const segment of tokenBarSegments(breakdown)) {
+      const element = bar.createDiv(`synthesis-token-segment is-${segment.bucket}`);
+      element.style.width = `${segment.percentage}%`;
+      element.setAttr("title", `${segment.label}: ${segment.tokens.toLocaleString()} tokens (${segment.percentage.toFixed(1)}%)`);
+      element.setAttr("aria-label", `${segment.label}: ${segment.tokens.toLocaleString()} tokens`);
+    }
     for (const [label, value] of [["System", breakdown.system], ["Conversation", breakdown.conversation], ["Tray", breakdown.tray], ["Message", breakdown.draft]] as Array<[string, number]>) {
       const row = this.tokenBreakdownElement.createDiv("synthesis-token-row");
       row.createEl("span", { text: label });
@@ -429,8 +494,11 @@ export class SynthesisView extends ItemView {
         if (this.conversationElement) {
           this.conversationElement.empty();
           const thread = this.plugin.state.threads.find((candidate) => candidate.id === this.plugin.state.activeThreadId);
-          if (thread) for (const message of this.plugin.messagesFor(thread.id)) this.renderMessage(this.conversationElement, message);
-          this.renderStreamingMessage(this.conversationElement);
+          if (thread) {
+            const messages = filterMessagesByQuery(this.plugin.messagesFor(thread.id), this.conversationSearchQuery);
+            for (const message of messages) this.renderMessage(this.conversationElement, message);
+          }
+          if (!this.conversationSearchQuery.trim()) this.renderStreamingMessage(this.conversationElement);
         }
       });
       completedTurnId = completedTurn?.id ?? null;
@@ -460,6 +528,11 @@ export class SynthesisView extends ItemView {
       if (source.headingPath) body.createEl("span", { text: source.headingPath.join(" › "), cls: "synthesis-tray-heading" });
       const view = body.createEl("button", { text: "View snapshot", cls: "mod-muted", attr: { "aria-label": `View supplied snapshot for S${source.sourceIndex}` } });
       view.onclick = () => openSourceSnapshotPreview(this.app, source, source.sourceIndex);
+      const candidates = historicalComparisonsFor(source, this.plugin.state.sourceSnapshots, this.plugin.state.turns);
+      if (candidates.length > 0) {
+        const compare = body.createEl("button", { text: `Compare… (${candidates.length})`, cls: "mod-muted", attr: { "aria-label": `Compare S${source.sourceIndex} with another stored snapshot` } });
+        compare.onclick = () => openSnapshotComparisonChooser(this.app, { source, turnCreatedAt: this.plugin.turnFor(source.turnId)?.createdAt ?? null, compatibleScope: true }, candidates);
+      }
     }
   }
 
@@ -471,8 +544,9 @@ export class SynthesisView extends ItemView {
   }
 
   private async recall(): Promise<void> {
-    if (this.plugin.state.activeTray.length > 0) {
-      const replace = await chooseAction(this.app, "Recall previous tray", "Replace the current tray with the previous successful tray?", [{ label: "Cancel", value: false }, { label: "Replace", value: true, cls: "mod-cta" }], false);
+    const state = this.plugin.state;
+    if (state.previousTray.length > 0 && (state.activeTray.length > 0 || state.activeLinkedContext.selections.length > 0)) {
+      const replace = await confirmRecallWithComparison(this.app, compareTrays(state.activeTray, state.previousTray), compareLinkedContexts(state.activeLinkedContext, state.previousLinkedContext));
       if (!replace) return;
     }
     await this.plugin.recallPreviousTray();

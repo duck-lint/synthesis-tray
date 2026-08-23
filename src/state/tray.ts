@@ -60,21 +60,27 @@ export type TrayPresentationEntry =
 
 /** Groups only explicit folder captures while keeping the top-level tray newest-first. */
 export function presentationTrayEntries(tray: TrayItem[]): TrayPresentationEntry[] {
+  return presentationTrayEntriesForMatches(tray, tray.map((item, index) => ({ item, index })));
+}
+
+/** Presentation-only grouping over a filtered set while retaining canonical indices. */
+export function presentationTrayEntriesForMatches(tray: TrayItem[], matches: Array<{ item: TrayItem; index: number }>): TrayPresentationEntry[] {
+  const matchedIndexes = new Set(matches.map((match) => match.index));
   const entries: TrayPresentationEntry[] = [];
   for (let index = 0; index < tray.length;) {
     const item = tray[index];
     const group = item.captureGroup;
     if (!group) {
-      entries.push({ kind: "item", item, index });
+      if (matchedIndexes.has(index)) entries.push({ kind: "item", item, index });
       index += 1;
       continue;
     }
     const items: Array<{ item: TrayItem; index: number }> = [];
     while (index < tray.length && tray[index].captureGroup?.id === group.id) {
-      items.push({ item: tray[index], index });
+      if (matchedIndexes.has(index)) items.push({ item: tray[index], index });
       index += 1;
     }
-    entries.push({ kind: "folder", group, items });
+    if (items.length > 0) entries.push({ kind: "folder", group, items });
   }
   return entries.reverse();
 }
