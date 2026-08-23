@@ -1,6 +1,6 @@
 import { getEncoding } from "js-tiktoken";
 import type { Tiktoken } from "js-tiktoken";
-import { Message, TokenBreakdown, TrayItem } from "../state/types";
+import { LinkedContextState, Message, TokenBreakdown, TrayItem } from "../state/types";
 import { serializeTray } from "../openai/sourceSerializer";
 
 let encoder: Tiktoken | null = null;
@@ -19,6 +19,10 @@ export interface TokenizationCounts {
   conversation: number;
   tray: number;
   draft: number;
+}
+
+export function countSerializedTrayTokens(tray: TrayItem[], linkedContext: LinkedContextState = { sources: [], selections: [] }): number {
+  return count(serializeTray(tray, linkedContext));
 }
 
 type Tokenize = (value: string) => number;
@@ -58,11 +62,11 @@ export class TokenCountCache {
     this.counts.conversation += 1;
   }
 
-  updateTray(revision: number, tray: TrayItem[]): void {
+  updateTray(revision: number, tray: TrayItem[], linkedContext: LinkedContextState = { sources: [], selections: [] }): void {
     if (this.trayRevision === revision) return;
     this.trayRevision = revision;
     this.trayPresent = tray.length > 0;
-    this.trayTokens = this.tokenize(serializeTray(tray));
+    this.trayTokens = this.tokenize(serializeTray(tray, linkedContext));
     this.counts.tray += 1;
   }
 
@@ -80,10 +84,10 @@ export class TokenCountCache {
   }
 }
 
-export function countNextRequest(systemPrompt: string, priorMessages: Message[], tray: TrayItem[], draft: string): TokenBreakdown {
+export function countNextRequest(systemPrompt: string, priorMessages: Message[], tray: TrayItem[], draft: string, linkedContext: LinkedContextState = { sources: [], selections: [] }): TokenBreakdown {
   const cache = new TokenCountCache();
   cache.updateSystem(systemPrompt);
   cache.updateConversation("request", 0, priorMessages);
-  cache.updateTray(0, tray);
+  cache.updateTray(0, tray, linkedContext);
   return cache.breakdown(draft, "request");
 }

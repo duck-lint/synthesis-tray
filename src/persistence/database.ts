@@ -1,7 +1,7 @@
 import initSqlJs from "sql.js";
-import { cloneTray } from "../state/tray";
+import { cloneLinkedContext, cloneTray } from "../state/tray";
 import { newId, nowIso } from "../state/ids";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isReasoningEffort, isSynthesisModel, migrateLegacyModel, Message, PersistedState, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage, ReasoningEffort, SynthesisModel } from "../state/types";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, isReasoningEffort, isSynthesisModel, migrateLegacyModel, LinkedContextSelection, LinkedContextSource, LinkedContextState, Message, PersistedState, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage, ReasoningEffort, SynthesisModel, WikilinkDestination } from "../state/types";
 
 /** The small surface of sql.js used here keeps the persistence boundary testable. */
 interface SqliteDatabase {
@@ -23,8 +23,10 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_message_id TEXT NOT NULL, assistant_message_id TEXT NOT NULL, created_at TEXT NOT NULL, model TEXT, reasoning_effort TEXT, FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS turn_usage (turn_id TEXT PRIMARY KEY, input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cached_input_tokens INTEGER, cache_write_tokens INTEGER, usage_json TEXT, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
-  CREATE TABLE IF NOT EXISTS source_snapshots (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, source_index INTEGER NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, capture_group_id TEXT, capture_group_kind TEXT, capture_group_label TEXT, conversation_thread_id TEXT, conversation_title TEXT, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS source_snapshots (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, source_index INTEGER NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, capture_group_id TEXT, capture_group_kind TEXT, capture_group_label TEXT, conversation_thread_id TEXT, conversation_title TEXT, provenance_kind TEXT, parent_source_ids_json TEXT, relationship TEXT, destination_source_id TEXT, outgoing_wikilinks_json TEXT, FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS tray_items (tray_name TEXT NOT NULL CHECK (tray_name IN ('active', 'previous')), ordinal INTEGER NOT NULL, id TEXT NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, added_at TEXT NOT NULL, capture_group_id TEXT, capture_group_kind TEXT, capture_group_label TEXT, conversation_thread_id TEXT, conversation_title TEXT, PRIMARY KEY (tray_name, id));
+  CREATE TABLE IF NOT EXISTS linked_context_sources (context_name TEXT NOT NULL CHECK (context_name IN ('active', 'previous')), destination_source_id TEXT NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, content_snapshot TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (context_name, destination_source_id));
+  CREATE TABLE IF NOT EXISTS linked_context_edges (context_name TEXT NOT NULL CHECK (context_name IN ('active', 'previous')), parent_source_id TEXT NOT NULL, destination_source_id TEXT NOT NULL, authored_target TEXT NOT NULL, display_text TEXT NOT NULL, PRIMARY KEY (context_name, parent_source_id, destination_source_id));
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 `;
 
@@ -64,6 +66,12 @@ function parseTrayRows(rows: Array<Record<string, unknown>>): TrayItem[] {
   }));
 }
 
+function parseLinkedContext(db: SqliteDatabase, contextName: "active" | "previous"): LinkedContextState {
+  const sources = rowObjects(db.exec("SELECT context_name, destination_source_id, source_path, scope, content_snapshot, added_at FROM linked_context_sources WHERE context_name = ?", [contextName])).map((row): LinkedContextSource => ({ destinationSourceId: asString(row.destination_source_id), sourcePath: asString(row.source_path), scope: "whole_note", contentSnapshot: asString(row.content_snapshot), addedAt: asString(row.added_at) }));
+  const selections = rowObjects(db.exec("SELECT parent_source_id, destination_source_id, authored_target, display_text FROM linked_context_edges WHERE context_name = ? ORDER BY rowid", [contextName])).map((row): LinkedContextSelection => ({ parentSourceId: asString(row.parent_source_id), destinationSourceId: asString(row.destination_source_id), authoredTarget: asString(row.authored_target), displayText: asString(row.display_text) }));
+  return { sources, selections };
+}
+
 /**
  * SQLite is kept in memory by sql.js and exported after each committed mutation.
  * This gives Obsidian one ordinary SQLite file without an Electron-ABI native module.
@@ -95,6 +103,11 @@ export class SynthesisDatabase {
       this.schemaDirty = !existing || [...tablesAfterSchema].some((table) => !tablesBeforeSchema.has(table));
       this.schemaDirty = ensureColumn(this.db, "source_snapshots", "conversation_thread_id", "TEXT") || this.schemaDirty;
       this.schemaDirty = ensureColumn(this.db, "source_snapshots", "conversation_title", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "provenance_kind", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "parent_source_ids_json", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "relationship", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "destination_source_id", "TEXT") || this.schemaDirty;
+      this.schemaDirty = ensureColumn(this.db, "source_snapshots", "outgoing_wikilinks_json", "TEXT") || this.schemaDirty;
       this.schemaDirty = ensureColumn(this.db, "source_snapshots", "capture_group_id", "TEXT") || this.schemaDirty;
       this.schemaDirty = ensureColumn(this.db, "source_snapshots", "capture_group_kind", "TEXT") || this.schemaDirty;
       this.schemaDirty = ensureColumn(this.db, "source_snapshots", "capture_group_label", "TEXT") || this.schemaDirty;
@@ -202,27 +215,27 @@ export class SynthesisDatabase {
       }
       return { turnId: asString(row.turn_id), inputTokens: row.input_tokens == null ? null : asNumber(row.input_tokens), outputTokens: row.output_tokens == null ? null : asNumber(row.output_tokens), reasoningTokens: row.reasoning_tokens == null ? recoveredReasoning : asNumber(row.reasoning_tokens), totalTokens: row.total_tokens == null ? null : asNumber(row.total_tokens), cachedInputTokens: row.cached_input_tokens == null ? null : asNumber(row.cached_input_tokens), cacheWriteTokens: row.cache_write_tokens == null ? null : asNumber(row.cache_write_tokens), usageJson };
     });
-    const sourceSnapshots = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title FROM source_snapshots")).map((row) => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot), ...(row.capture_group_id == null ? {} : { captureGroup: { id: asString(row.capture_group_id), kind: "folder" as const, label: asString(row.capture_group_label) } }), ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }), ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
+    const sourceSnapshots = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title, provenance_kind, parent_source_ids_json, relationship, destination_source_id, outgoing_wikilinks_json FROM source_snapshots")).map((row): SourceSnapshot => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot), ...(row.capture_group_id == null ? {} : { captureGroup: { id: asString(row.capture_group_id), kind: "folder" as const, label: asString(row.capture_group_label) } }), ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }), ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }), ...(row.provenance_kind === "explicit" || row.provenance_kind === "linked" ? { provenanceKind: row.provenance_kind } : {}), ...(row.parent_source_ids_json ? { parentSourceIds: JSON.parse(asString(row.parent_source_ids_json)) as string[] } : {}), ...(row.relationship === "outgoing_wikilink" ? { relationship: "outgoing_wikilink" as const } : {}), ...(row.destination_source_id == null ? {} : { destinationSourceId: asString(row.destination_source_id) }), ...(row.outgoing_wikilinks_json ? { outgoingWikilinks: JSON.parse(asString(row.outgoing_wikilinks_json)) as WikilinkDestination[] } : {}) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
     const trayRows = rowObjects(db.exec("SELECT tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title FROM tray_items ORDER BY tray_name, ordinal"));
     const activeTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "active"));
     const previousTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "previous"));
     const meta = new Map(rowObjects(db.exec("SELECT key, value FROM meta")).map((row) => [asString(row.key), asNullableString(row.value)]));
-    return { threads, messages, turns, turnUsage, sourceSnapshots, activeTray: cloneTray(activeTray), previousTray: cloneTray(previousTray), activeThreadId: meta.get("activeThreadId") ?? null };
+    return { threads, messages, turns, turnUsage, sourceSnapshots, activeTray: cloneTray(activeTray), previousTray: cloneTray(previousTray), activeLinkedContext: cloneLinkedContext(parseLinkedContext(db, "active")), previousLinkedContext: cloneLinkedContext(parseLinkedContext(db, "previous")), activeThreadId: meta.get("activeThreadId") ?? null };
   }
 
-  async setMeta(activeTray: TrayItem[], previousTray: TrayItem[], activeThreadId: string | null): Promise<void> {
-    await this.mutate((db) => { this.replaceTray(db, "active", activeTray); this.replaceTray(db, "previous", previousTray); this.putMeta(db, "activeThreadId", activeThreadId); });
+  async setMeta(activeTray: TrayItem[], previousTray: TrayItem[], activeThreadId: string | null, activeLinkedContext: LinkedContextState = { sources: [], selections: [] }, previousLinkedContext: LinkedContextState = { sources: [], selections: [] }): Promise<void> {
+    await this.mutate((db) => { this.replaceTray(db, "active", activeTray); this.replaceTray(db, "previous", previousTray); this.replaceLinkedContext(db, "active", activeLinkedContext); this.replaceLinkedContext(db, "previous", previousLinkedContext); this.putMeta(db, "activeThreadId", activeThreadId); });
   }
 
-  async commitTurn(thread: Thread, user: Message, assistant: Message, turn: Turn, sources: SourceSnapshot[], tray: TrayItem[], usage?: TurnUsage): Promise<void> {
+  async commitTurn(thread: Thread, user: Message, assistant: Message, turn: Turn, sources: SourceSnapshot[], tray: TrayItem[], usage?: TurnUsage, linkedContext: LinkedContextState = { sources: [], selections: [] }): Promise<void> {
     await this.mutate((db) => {
       db.run("INSERT OR REPLACE INTO threads (id, title, created_at, updated_at, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?)", [thread.id, thread.title, thread.createdAt, thread.updatedAt, thread.model, thread.reasoningEffort]);
       db.run("INSERT INTO messages (id, thread_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)", [user.id, user.threadId, user.turnId, user.role, user.content, user.createdAt]);
       db.run("INSERT INTO messages (id, thread_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)", [assistant.id, assistant.threadId, assistant.turnId, assistant.role, assistant.content, assistant.createdAt]);
       db.run("INSERT INTO turns (id, thread_id, user_message_id, assistant_message_id, created_at, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?)", [turn.id, turn.threadId, turn.userMessageId, turn.assistantMessageId, turn.createdAt, turn.model, turn.reasoningEffort]);
       if (usage) db.run("INSERT INTO turn_usage (turn_id, input_tokens, output_tokens, reasoning_tokens, total_tokens, cached_input_tokens, cache_write_tokens, usage_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [usage.turnId, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.totalTokens, usage.cachedInputTokens, usage.cacheWriteTokens, usage.usageJson]);
-      for (const source of sources) db.run("INSERT INTO source_snapshots (id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [source.id, source.turnId, source.sourceIndex, source.sourcePath, source.scope, source.headingPath ? JSON.stringify(source.headingPath) : null, source.contentSnapshot, source.captureGroup?.id ?? null, source.captureGroup?.kind ?? null, source.captureGroup?.label ?? null, source.conversationThreadId ?? null, source.conversationTitle ?? null]);
-      this.replaceTray(db, "previous", tray); this.replaceTray(db, "active", []);
+      for (const source of sources) db.run("INSERT INTO source_snapshots (id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title, provenance_kind, parent_source_ids_json, relationship, destination_source_id, outgoing_wikilinks_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [source.id, source.turnId, source.sourceIndex, source.sourcePath, source.scope, source.headingPath ? JSON.stringify(source.headingPath) : null, source.contentSnapshot, source.captureGroup?.id ?? null, source.captureGroup?.kind ?? null, source.captureGroup?.label ?? null, source.conversationThreadId ?? null, source.conversationTitle ?? null, source.provenanceKind ?? null, source.parentSourceIds ? JSON.stringify(source.parentSourceIds) : null, source.relationship ?? null, source.destinationSourceId ?? null, source.outgoingWikilinks ? JSON.stringify(source.outgoingWikilinks) : null]);
+      this.replaceTray(db, "previous", tray); this.replaceTray(db, "active", []); this.replaceLinkedContext(db, "previous", linkedContext); this.replaceLinkedContext(db, "active", { sources: [], selections: [] });
     });
   }
 
@@ -236,13 +249,20 @@ export class SynthesisDatabase {
       db.run("DELETE FROM threads WHERE id = ?", [threadId]);
     });
   }
-  async setActiveThread(id: string | null, activeTray: TrayItem[], previousTray: TrayItem[]): Promise<void> { await this.setMeta(activeTray, previousTray, id); }
+  async setActiveThread(id: string | null, activeTray: TrayItem[], previousTray: TrayItem[], activeLinkedContext: LinkedContextState = { sources: [], selections: [] }, previousLinkedContext: LinkedContextState = { sources: [], selections: [] }): Promise<void> { await this.setMeta(activeTray, previousTray, id, activeLinkedContext, previousLinkedContext); }
 
   async close(): Promise<void> { await this.writeQueue; this.db?.close(); this.db = null; }
 
   private replaceTray(db: SqliteDatabase, trayName: "active" | "previous", tray: TrayItem[]): void {
     db.run("DELETE FROM tray_items WHERE tray_name = ?", [trayName]);
     tray.forEach((item, index) => db.run("INSERT INTO tray_items (tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [trayName, index + 1, item.id, item.sourcePath, item.scope, item.headingPath ? JSON.stringify(item.headingPath) : null, item.contentSnapshot, item.addedAt, item.captureGroup?.id ?? null, item.captureGroup?.kind ?? null, item.captureGroup?.label ?? null, item.conversationThreadId ?? null, item.conversationTitle ?? null]));
+  }
+
+  private replaceLinkedContext(db: SqliteDatabase, contextName: "active" | "previous", context: LinkedContextState): void {
+    db.run("DELETE FROM linked_context_edges WHERE context_name = ?", [contextName]);
+    db.run("DELETE FROM linked_context_sources WHERE context_name = ?", [contextName]);
+    for (const source of context.sources) db.run("INSERT INTO linked_context_sources (context_name, destination_source_id, source_path, scope, content_snapshot, added_at) VALUES (?, ?, ?, ?, ?, ?)", [contextName, source.destinationSourceId, source.sourcePath, source.scope, source.contentSnapshot, source.addedAt]);
+    for (const selection of context.selections) db.run("INSERT INTO linked_context_edges (context_name, parent_source_id, destination_source_id, authored_target, display_text) VALUES (?, ?, ?, ?, ?)", [contextName, selection.parentSourceId, selection.destinationSourceId, selection.authoredTarget, selection.displayText]);
   }
 
   private putMeta(db: SqliteDatabase, key: string, value: string | null): void { db.run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [key, value]); }

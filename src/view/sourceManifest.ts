@@ -5,6 +5,8 @@ export interface SourceManifestEntry {
   identity: string;
   scope: string;
   headingPath: string[] | null;
+  provenance?: "explicit" | "linked";
+  parentSourceIds?: string[];
 }
 
 export function sourceManifestEntries(sources: SourceSnapshot[]): SourceManifestEntry[] {
@@ -16,5 +18,7 @@ export function sourceManifestEntries(sources: SourceSnapshot[]): SourceManifest
       identity: source.scope === "conversation" && source.conversationTitle ? `Conversation: "${source.conversationTitle}"` : source.sourcePath,
       scope: source.scope,
       headingPath: source.headingPath ? [...source.headingPath] : null,
+      ...(source.provenanceKind ? { provenance: source.provenanceKind } : {}),
+      ...(source.parentSourceIds ? { parentSourceIds: [...source.parentSourceIds] } : {}),
     }));
 }

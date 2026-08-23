@@ -5,6 +5,38 @@ export type SynthesisModel = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Verbosity = "low" | "medium" | "high";
 
+/** Authored identity metadata; this never represents destination-note content. */
+export interface WikilinkDestination {
+  authoredTarget: string;
+  displayText: string;
+  destinationSourceId: string | null;
+  destinationPath: string | null;
+}
+
+/** One immutable destination snapshot, deduplicated by destinationSourceId. */
+export interface LinkedContextSource {
+  destinationSourceId: string;
+  sourcePath: string;
+  scope: "whole_note";
+  contentSnapshot: string;
+  addedAt: string;
+}
+
+/** The relationship is the authority for linked inclusion, not the destination alone. */
+export interface LinkedContextSelection {
+  parentSourceId: string;
+  destinationSourceId: string;
+  authoredTarget: string;
+  displayText: string;
+}
+
+export interface LinkedContextState {
+  sources: LinkedContextSource[];
+  selections: LinkedContextSelection[];
+}
+
+export const EMPTY_LINKED_CONTEXT: LinkedContextState = { sources: [], selections: [] };
+
 export const DEFAULT_MODEL: SynthesisModel = "gpt-5.6-luna";
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
 /** Former global default used only when interpreting an old thread row. */
@@ -27,6 +59,8 @@ export interface TrayItem {
   captureGroup?: CaptureGroup;
   conversationThreadId?: string;
   conversationTitle?: string;
+  /** Derived from the immutable snapshot and the current Obsidian resolver. */
+  outgoingWikilinks?: WikilinkDestination[];
 }
 
 export interface Thread {
@@ -83,6 +117,11 @@ export interface SourceSnapshot {
   captureGroup?: CaptureGroup;
   conversationThreadId?: string;
   conversationTitle?: string;
+  provenanceKind?: "explicit" | "linked";
+  parentSourceIds?: string[];
+  relationship?: "outgoing_wikilink";
+  destinationSourceId?: string;
+  outgoingWikilinks?: WikilinkDestination[];
 }
 
 export interface TokenBreakdown {
@@ -101,6 +140,8 @@ export interface PersistedState {
   sourceSnapshots: SourceSnapshot[];
   activeTray: TrayItem[];
   previousTray: TrayItem[];
+  activeLinkedContext: LinkedContextState;
+  previousLinkedContext: LinkedContextState;
   activeThreadId: string | null;
 }
 
@@ -116,6 +157,10 @@ agreement where the sources differ.
 
 When grounding a claim in selected material, use the supplied source
 identifiers such as [S1], [S2], and [S3].
+
+Outgoing wikilink metadata records authored relationships only. A destination
+name or link is not evidence from that destination note. Use destination-note
+content only when a separately marked linked source supplies that content.
 
 When a claim is grounded in a specific passage or localized region of a
 selected source, cite the narrowest useful snapshot-relative line or line

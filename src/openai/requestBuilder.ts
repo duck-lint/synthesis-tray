@@ -1,4 +1,4 @@
-import { Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem, Verbosity } from "../state/types";
+import { LinkedContextState, Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem, Verbosity } from "../state/types";
 import { serializeTray } from "./sourceSerializer";
 
 export interface ResponsesInputMessage {
@@ -35,9 +35,9 @@ export interface InferenceConfig {
   reasoningEffort: ReasoningEffort;
 }
 
-export function buildRequestText(priorMessages: Message[], tray: TrayItem[], draft: string): RequestTextParts {
+export function buildRequestText(priorMessages: Message[], tray: TrayItem[], draft: string, linkedContext: LinkedContextState = { sources: [], selections: [] }): RequestTextParts {
   const conversation = priorMessages.map((message) => `${message.role === "user" ? "USER" : "ASSISTANT"}:\n${message.content}`).join("\n\n");
-  const trayText = serializeTray(tray);
+  const trayText = serializeTray(tray, linkedContext);
   const currentUser = trayText ? `${trayText}\n\nUSER MESSAGE:\n\n${draft}` : draft;
   return { conversation, tray: trayText, currentUser };
 }
@@ -64,8 +64,8 @@ function supportsPromptCacheOptions(model: SynthesisModel): boolean {
   return /^gpt-5\.6(?:$|[-.])/.test(model);
 }
 
-export function buildResponsesRequest(settings: PluginSettings, config: InferenceConfig, threadId: string, priorMessages: Message[], tray: TrayItem[], draft: string): ResponsesRequest {
-  const { currentUser } = buildRequestText(priorMessages, tray, draft);
+export function buildResponsesRequest(settings: PluginSettings, config: InferenceConfig, threadId: string, priorMessages: Message[], tray: TrayItem[], draft: string, linkedContext: LinkedContextState = { sources: [], selections: [] }): ResponsesRequest {
+  const { currentUser } = buildRequestText(priorMessages, tray, draft, linkedContext);
   const cacheable = settings.promptCachingEnabled && supportsPromptCacheOptions(config.model);
   // Responses only accepts breakpoint-capable input_text blocks on user-role
   // message content. Assistant messages accept output_text content, but the

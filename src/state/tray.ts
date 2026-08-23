@@ -1,4 +1,4 @@
-import { TrayItem } from "./types";
+import { EMPTY_LINKED_CONTEXT, LinkedContextState, TrayItem } from "./types";
 
 export type TrayRevealTarget =
   | { kind: "item"; id: string }
@@ -24,7 +24,29 @@ export function cloneTray(tray: TrayItem[]): TrayItem[] {
     ...item,
     headingPath: item.headingPath ? [...item.headingPath] : null,
     ...(item.captureGroup ? { captureGroup: { ...item.captureGroup } } : {}),
+    ...(item.outgoingWikilinks ? { outgoingWikilinks: item.outgoingWikilinks.map((link) => ({ ...link })) } : {}),
   }));
+}
+
+export function cloneLinkedContext(context: LinkedContextState): LinkedContextState {
+  return {
+    sources: context.sources.map((source) => ({ ...source })),
+    selections: context.selections.map((selection) => ({ ...selection })),
+  };
+}
+
+export function emptyLinkedContext(): LinkedContextState {
+  return { sources: [...EMPTY_LINKED_CONTEXT.sources], selections: [...EMPTY_LINKED_CONTEXT.selections] };
+}
+
+export function linkedContextForRequest(explicitTray: TrayItem[], context: LinkedContextState): LinkedContextState {
+  const explicitIds = new Set(explicitTray.map((item) => item.id));
+  const selections = context.selections.filter((selection) => explicitIds.has(selection.parentSourceId));
+  const destinationIds = new Set(selections.map((selection) => selection.destinationSourceId));
+  return {
+    selections,
+    sources: context.sources.filter((source) => destinationIds.has(source.destinationSourceId)),
+  };
 }
 
 /** Presentation-only order: newest items first while retaining canonical indices. */

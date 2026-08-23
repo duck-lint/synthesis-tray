@@ -37,6 +37,7 @@ export class SynthesisView extends ItemView {
   private trayBasisPx: number | null = null;
   /** Tri-state presentation preference: absent means apply the size default. */
   private captureGroupPreferences = new Map<string, boolean>();
+  private linkedExpansion = new Set<string>();
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: SynthesisTrayPlugin) {
     super(leaf);
@@ -297,9 +298,77 @@ export class SynthesisView extends ItemView {
     const actions = row.createDiv("synthesis-tray-item-actions");
     const preview = actions.createEl("button", { text: "Preview", cls: "mod-muted", attr: { "aria-label": `Preview S${index + 1} snapshot` } });
     preview.onclick = () => openSourceSnapshotPreview(this.app, asPreviewSource(item), index + 1, null, null, false);
+    const outgoing = this.plugin.outgoingWikilinks(item);
+    if (outgoing.some((link) => link.destinationSourceId)) {
+      const linksMenu = actions.createEl("button", { text: "⋯", cls: "mod-muted", attr: { "aria-label": `Linked note actions for S${index + 1}` } });
+      linksMenu.onclick = (event) => this.showLinkedMenu(event, item, outgoing);
+    }
     const remove = actions.createEl("button", { text: "×", cls: "synthesis-remove", attr: { "aria-label": `Remove S${index + 1}` } });
     remove.onclick = () => void this.plugin.removeTrayItem(item.id);
     if (trayItemIsRevealTarget(item.id, this.pendingTrayRevealTarget)) window.setTimeout(() => row.scrollIntoView({ block: "nearest" }), 0);
+
+    if (outgoing.length === 0) return;
+    const resolved = outgoing.filter((link) => link.destinationSourceId);
+    const unresolved = outgoing.length - resolved.length;
+    const linkedDetails = container.createEl("details", { cls: "synthesis-linked-context" });
+    linkedDetails.open = this.linkedExpansion.has(item.id);
+    let refreshBulkEstimate: () => void = () => undefined;
+    linkedDetails.ontoggle = () => {
+      if (linkedDetails.open) {
+        this.linkedExpansion.add(item.id);
+        refreshBulkEstimate();
+      } else this.linkedExpansion.delete(item.id);
+    };
+    linkedDetails.createEl("summary", { text: `↳ Linked notes · ${resolved.length}${unresolved ? ` · ${unresolved} unresolved` : ""}`, cls: "synthesis-linked-summary" });
+    if (resolved.length === 0) {
+      linkedDetails.createDiv({ text: "No resolvable destination notes are available.", cls: "synthesis-empty" });
+      return;
+    }
+    const list = linkedDetails.createDiv("synthesis-linked-list");
+    const selected = new Set<string>();
+    for (const link of resolved) {
+      const destinationSourceId = link.destinationSourceId!;
+      const selection = this.plugin.linkedSelection(item.id, destinationSourceId);
+      const explicit = this.plugin.state.activeTray.some((candidate) => candidate.sourcePath === link.destinationPath);
+      const label = list.createEl("label", { cls: "synthesis-linked-option" });
+      const checkbox = label.createEl("input", { type: "checkbox", attr: { "aria-label": `Include linked note ${link.displayText}` } });
+      checkbox.checked = Boolean(selection);
+      checkbox.onchange = () => checkbox.checked ? selected.add(destinationSourceId) : selected.delete(destinationSourceId);
+      if (selection) selected.add(destinationSourceId);
+      const text = label.createDiv("synthesis-linked-label");
+      text.createEl("span", { text: link.displayText, cls: "synthesis-tray-path" });
+      if (link.displayText !== link.authoredTarget) text.createEl("span", { text: `[[${link.authoredTarget}]]`, cls: "synthesis-tray-heading" });
+      if (explicit) text.createEl("span", { text: "already included as explicit source", cls: "synthesis-tray-scope" });
+      else if (selection) text.createEl("span", { text: "included linked context", cls: "synthesis-tray-scope" });
+      const tokenEstimate = this.plugin.linkedTokenEstimate(item.id, destinationSourceId);
+      if (tokenEstimate !== null) text.createEl("span", { text: `+${tokenEstimate.toLocaleString()} tokens`, cls: "synthesis-tray-scope" });
+      if (selection) {
+        const removeLinked = label.createEl("button", { text: "×", cls: "synthesis-remove", attr: { "aria-label": `Remove linked context ${link.displayText}` } });
+        removeLinked.onclick = (event) => { event.preventDefault(); void this.plugin.removeLinkedContext(item.id, destinationSourceId); };
+      }
+      if (selection && !explicit) {
+        const promote = label.createEl("button", { text: "Promote", cls: "mod-muted", attr: { "aria-label": `Promote ${link.displayText} to an explicit tray source` } });
+        promote.onclick = (event) => { event.preventDefault(); void this.plugin.promoteLinkedContext(destinationSourceId); };
+      }
+    }
+    const actionsRow = linkedDetails.createDiv("synthesis-linked-actions");
+    const addSelected = actionsRow.createEl("button", { text: "Add selected", cls: "mod-cta" });
+    addSelected.onclick = () => void this.plugin.addLinkedContexts(item.id, [...selected]);
+    const addAll = actionsRow.createEl("button", { text: `Add all ${resolved.length}`, cls: "mod-muted" });
+    addAll.onclick = () => void this.plugin.addLinkedContexts(item.id, resolved.map((link) => link.destinationSourceId!));
+    refreshBulkEstimate = () => {
+      void this.plugin.linkedBulkTokenEstimate(item.id, resolved.map((link) => link.destinationSourceId!)).then((estimate) => {
+        if (estimate !== null && addAll.isConnected) addAll.setText(`Add all ${resolved.length} · +${estimate.toLocaleString()}`);
+      });
+    };
+    if (linkedDetails.open) refreshBulkEstimate();
+  }
+
+  private showLinkedMenu(event: MouseEvent, item: TrayItem, outgoing: ReturnType<SynthesisTrayPlugin["outgoingWikilinks"]>): void {
+    const resolved = outgoing.filter((link) => link.destinationSourceId);
+    const menu = new Menu();
+    menu.addItem((entry) => entry.setTitle(`Add all ${resolved.length} linked notes`).setIcon("links").onClick(() => void this.plugin.addLinkedContexts(item.id, resolved.map((link) => link.destinationSourceId!))));
+    menu.showAtMouseEvent(event);
   }
 
   private renderTokenCount(): void {
@@ -384,6 +453,7 @@ export class SynthesisView extends ItemView {
       const summary = details.createEl("summary");
       summary.createEl("strong", { text: `S${source.sourceIndex}`, cls: "synthesis-source-id" });
       summary.createEl("span", { text: entry.identity });
+      if (entry.provenance === "linked") summary.createEl("span", { text: `Linked context · via ${(entry.parentSourceIds ?? []).join(", ")}`, cls: "synthesis-tray-scope" });
       const body = details.createDiv("synthesis-source-entry-body");
       body.createEl("span", { text: "Snapshot supplied to this turn", cls: "synthesis-snapshot-label" });
       body.createEl("span", { text: readableScope(source.scope), cls: "synthesis-tray-scope" });

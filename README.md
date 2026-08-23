@@ -27,6 +27,8 @@ Each thread independently selects one of `Sol`, `Terra`, or `Luna` and a reasoni
 
 The tray displays newest-first while canonical source identifiers remain stable in insertion order. Folder captures remain grouped, can be collapsed or resized, and use deterministic initial expansion: small groups may open and large groups start collapsed. An explicit user collapse or expansion survives unrelated tray mutations. The approximate local `o200k_base` token estimate is shown by system, conversation, tray, and current-message buckets; stable buckets are cached until their inputs change. Previous successful trays can be recalled without rereading notes.
 
+Explicit tray notes with outgoing Obsidian wikilinks expose a compact linked-notes disclosure. Resolved destinations can be selected individually, added in bulk, removed, or promoted to explicit roots; unresolved links remain identity-only. Linked destinations are stored as parent-to-destination selections and are serialized as subordinate, deduplicated context, never as automatic relevance decisions. Linked notes expand one hop from explicit roots only.
+
 ## Citations and snapshots
 
 Sources are serialized with identifiers such as `[S1]`. Localized claims should use snapshot-relative citations such as `[S1:L42-L48]`; the line numbers refer to the numbered immutable snapshot supplied to that turn, not to current or original vault-file line numbers. Historical source inspection opens that stored snapshot. A current-note view, when available, is a separate operation.

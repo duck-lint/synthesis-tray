@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeThread, SynthesisDatabase } from "../src/persistence/database";
 import { newId, nowIso } from "../src/state/ids";
-import { Message, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage } from "../src/state/types";
+import { LinkedContextState, Message, SourceSnapshot, Thread, TrayItem, Turn, TurnUsage } from "../src/state/types";
 
 class MemoryVaultAdapter {
   readonly files = new Map<string, ArrayBuffer>();
@@ -52,6 +52,22 @@ describe("SQLite persistence", () => {
     expect(reloaded.activeTray).toEqual([current]);
     expect(reloaded.activeTray[0].contentSnapshot).toBe("A snapshot");
     expect(adapter.wasmReads).toBeGreaterThan(0);
+  });
+
+  it("persists linked inclusion as parent-to-destination relational state", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `linked-context-${newId("test")}`;
+    const db = database(adapter, name);
+    const parent = tray("A.md", "A [[B]]");
+    const linkedContext: LinkedContextState = {
+      sources: [{ destinationSourceId: "B.md", sourcePath: "B.md", scope: "whole_note", contentSnapshot: "B", addedAt: nowIso() }],
+      selections: [{ parentSourceId: parent.id, destinationSourceId: "B.md", authoredTarget: "B", displayText: "B" }],
+    };
+    await db.setMeta([parent], [], "thread-1", linkedContext, { sources: [], selections: [] });
+    await db.close();
+    const reloaded = await database(adapter, name).load();
+    expect(reloaded.activeLinkedContext).toEqual(linkedContext);
+    expect(reloaded.previousLinkedContext).toEqual({ sources: [], selections: [] });
   });
 
   it("commits relational turn/source records and clears active tray", async () => {
