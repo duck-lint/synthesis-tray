@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSettings, PREVIOUS_DEFAULT_SYSTEM_PROMPT } from "../src/state/settings";
+import { mergeSettings } from "../src/state/settings";
 import { migrateLegacyModel } from "../src/state/types";
 import { newThreadInferenceDefaults } from "../src/state/thread";
 
@@ -24,8 +24,7 @@ describe("secret settings boundary", () => {
     expect(migrateLegacyModel("gpt-5.6")).toBe("gpt-5.6-sol");
   });
 
-  it("migrates only the exact previous default prompt", () => {
-    expect(mergeSettings({ systemPrompt: PREVIOUS_DEFAULT_SYSTEM_PROMPT }).systemPrompt).not.toBe(PREVIOUS_DEFAULT_SYSTEM_PROMPT);
+  it("preserves an existing persisted prompt as user-owned settings", () => {
     expect(mergeSettings({ systemPrompt: "user-authored prompt" }).systemPrompt).toBe("user-authored prompt");
   });
 
