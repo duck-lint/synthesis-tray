@@ -2,6 +2,9 @@
 
 Synthesis Tray is a desktop-only Obsidian plugin for manually composing an explicit request from selected authored Markdown and a local conversation. The plugin never decides what vault context is relevant: there is no autonomous retrieval, RAG, indexing, ranking, link/embed expansion, summarization, or silent truncation.
 
+<img width="1052" height="1439" alt="image" src="https://github.com/user-attachments/assets/fd51b3a0-9f75-4716-aff4-e39f0353df8a" />
+
+
 ## Product contract
 
 - The user explicitly adds selections, headings, notes, folders, or conversation snapshots to one shared active tray.
