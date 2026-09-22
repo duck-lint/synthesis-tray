@@ -1,0 +1,65 @@
+tracker:
+  kind: github
+  provider:
+    repo: "duck-lint/synthesis-tray"
+    token: $SYMPHONY_GITHUB_TOKEN
+  required_labels:
+    - symphony:auto
+  active_states:
+    - open
+  terminal_states:
+    - closed
+
+polling:
+  interval_ms: 5000
+
+workspace:
+  root: ~/code/symphony-workspaces/synthesis-tray
+  repository: github.com/duck-lint/synthesis-tray
+  branch: master
+
+human_response:
+  authorized_user_ids:
+    - 250741170
+
+lifecycle:
+  integrity_secret: "$SYMPHONY_LIFECYCLE_INTEGRITY_SECRET"
+
+environment:
+  capabilities:
+    - id: synthesis-tray-node
+      command:
+        executable: node
+        args:
+          - -e
+          - "if (Number(process.versions.node.split('.')[0]) !== 22) process.exit(1)"
+
+    - id: synthesis-tray-dependencies
+      command:
+        executable: node
+        args:
+          - -e
+          - "for (const name of ['typescript', 'vitest', 'esbuild', 'obsidian', 'sql.js']) require.resolve(name)"
+
+hooks:
+  timeout_ms: 180000
+
+  after_create: |
+    set -eu
+
+    git clone --depth 1 --single-branch \
+      --branch master \
+      https://github.com/duck-lint/Synthesis-Tray.git .
+
+    npm ci
+
+agent:
+  max_concurrent_agents: 1
+
+codex:
+  command: codex --config 'model="gpt-5.6-luna"' --config 'model_reasoning_effort="high"' app-server
+  approval_policy: on-request
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: false
