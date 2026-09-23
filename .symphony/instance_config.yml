@@ -47,16 +47,36 @@ hooks:
   after_create: |
     set -eu
 
-    test "$(node -p 'process.platform')" = linux
+    echo "=== Node environment ==="
 
-    test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+    command -v node
+    command -v npm
+
+    node -p '"Platform: " + process.platform'
+    node -p '"Version: " + process.version'
+    node -p '"Executable: " + process.execPath'
+
+    platform="$(node -p 'process.platform')"
+    major="$(node -p 'process.versions.node.split(".")[0]')"
+
+    if [ "$platform" != linux ]; then
+      echo "ERROR: Linux Node required; found $platform" >&2
+      exit 1
+    fi
+
+    if [ "$major" != 22 ]; then
+      echo "ERROR: Node 22 required; found Node $major" >&2
+      exit 1
+    fi
 
     case "$(command -v npm)" in
       /mnt/*|*.cmd|*.exe)
-        echo "Windows npm detected; Linux npm required." >&2
+        echo "ERROR: Windows npm detected" >&2
         exit 1
         ;;
     esac
+
+    echo "Node environment verified."
 
     git clone --depth 1 --single-branch \
       --branch master \
