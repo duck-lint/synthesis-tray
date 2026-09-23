@@ -32,7 +32,7 @@ environment:
         executable: node
         args:
           - -e
-          - "if (Number(process.versions.node.split('.')[0]) !== 22) process.exit(1)"
+          - "if (process.platform !== 'linux' || Number(process.versions.node.split('.')[0]) !== 22) process.exit(1)"
 
     - id: synthesis-tray-dependencies
       command:
@@ -47,9 +47,20 @@ hooks:
   after_create: |
     set -eu
 
+    test "$(node -p 'process.platform')" = linux
+
+    test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+
+    case "$(command -v npm)" in
+      /mnt/*|*.cmd|*.exe)
+        echo "Windows npm detected; Linux npm required." >&2
+        exit 1
+        ;;
+    esac
+
     git clone --depth 1 --single-branch \
       --branch master \
-      https://github.com/duck-lint/Synthesis-Tray.git .
+      https://github.com/duck-lint/synthesis-tray.git .
 
     npm ci
 
