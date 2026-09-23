@@ -16,14 +16,14 @@ This repository contains **project-specific specification and authority only**. 
 
 Authoritative project documents:
 
-* `harness/project-spec.md` — product purpose, current baseline, invariants, architecture boundaries, scope, and acceptance evidence.
-* `harness/authority.md` — product decision ownership, authority hierarchy, provenance rules, evidence standards, and conditions requiring a maintainer decision.
+* `harness/project-spec/project-spec.md` — product purpose, current baseline, invariants, architecture boundaries, scope, and acceptance evidence.
+* `harness/project-spec/authority.md` — product decision ownership, authority hierarchy, provenance rules, evidence standards, and conditions requiring a maintainer decision.
 
 These documents have distinct scopes. `authority.md` governs how product decisions are authorized; `project-spec.md` governs the accepted product contract. The applicable issue defines its bounded task without silently amending either document.
 
 A contradiction between the specification and authority model is a harness defect. Surface it rather than resolving it through implementation, tests, convenience, or model inference.
 
-Existing implementation is evidence of current behavior, not higher product authority. Follow the decision hierarchy in `harness/authority.md`.
+Existing implementation is evidence of current behavior, not higher product authority. Follow the decision hierarchy in `harness/project-spec/authority.md`.
 
 ## Core Authority Split
 

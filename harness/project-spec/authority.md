@@ -16,8 +16,8 @@ Maintainer approval must be attributable to an actual explicit instruction or de
 Use the following order **for product decisions**:
 
 1. **Explicit current maintainer decisions:** an attributable decision may amend the baseline. If it changes enduring product meaning, update the governing documents in the same authorized change and record the decision; do not leave contradictory permanent authority behind.
-2. **This document (`harness/authority.md`):** determines decision ownership, conflict treatment, and evidentiary boundaries.
-3. **`harness/project-spec.md`:** governs the accepted product purpose, conceptual boundaries, and cross-feature invariants.
+2. **This document (`harness/project-spec/authority.md`):** determines decision ownership, conflict treatment, and evidentiary boundaries.
+3. **`harness/project-spec/project-spec.md`:** governs the accepted product purpose, conceptual boundaries, and cross-feature invariants.
 4. **Accepted issue requirements and acceptance criteria:** authorize the task's specific behavior only insofar as consistent with the higher-level product contract, or expressly approved as an amendment by the maintainer.
 5. **Current source, tests, schemas, and observed runtime behavior:** establish what the product currently does and what changes are feasible. They are evidence, not automatic authorization to preserve bugs or redefine requirements.
 6. **README, SECURITY, release notes, historical discussion, external examples, and third-party documentation:** provide useful descriptions, constraints, or background. Treat mismatches with the above as reconciliation work, not as silent permission to choose whichever source is convenient.
