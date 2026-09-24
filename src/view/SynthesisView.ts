@@ -121,9 +121,13 @@ export class SynthesisView extends ItemView {
     threadSelect.disabled = this.streaming;
     threadSelect.onchange = () => void this.plugin.switchThread(threadSelect.value);
 
-    const modelSelect = this.createInferenceSelect(header, "Model tier", MODEL_OPTIONS, thread.model, (model) => void this.plugin.updateThreadInference(thread.id, model, thread.reasoningEffort));
+    const modelSelect = this.createInferenceSelect(header, "Model tier", MODEL_OPTIONS, thread.model, (model) => {
+      const reasoningEffort = model === "gpt-6-astra" && thread.reasoningEffort === "none" ? "low" : thread.reasoningEffort;
+      void this.plugin.updateThreadInference(thread.id, model, reasoningEffort);
+    });
     modelSelect.disabled = this.streaming;
-    const reasoningSelect = this.createInferenceSelect(header, "Reasoning effort", REASONING_OPTIONS, thread.reasoningEffort, (reasoningEffort) => void this.plugin.updateThreadInference(thread.id, thread.model, reasoningEffort));
+    const reasoningOptions = thread.model === "gpt-6-astra" ? REASONING_OPTIONS.filter((option) => option.value !== "none") : REASONING_OPTIONS;
+    const reasoningSelect = this.createInferenceSelect(header, "Reasoning effort", reasoningOptions, thread.reasoningEffort, (reasoningEffort) => void this.plugin.updateThreadInference(thread.id, thread.model, reasoningEffort));
     reasoningSelect.disabled = this.streaming;
 
     const newButton = header.createEl("button", { text: "+", attr: { "aria-label": "New thread" } });

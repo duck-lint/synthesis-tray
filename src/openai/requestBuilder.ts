@@ -1,4 +1,4 @@
-import { LinkedContextState, Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem, Verbosity } from "../state/types";
+import { isReasoningEffortSupportedByModel, LinkedContextState, Message, PluginSettings, ReasoningEffort, SynthesisModel, TrayItem, Verbosity } from "../state/types";
 import { serializeTray } from "./sourceSerializer";
 
 export interface ResponsesInputMessage {
@@ -61,10 +61,13 @@ export function promptCacheKey(settings: PluginSettings, model: SynthesisModel, 
 }
 
 function supportsPromptCacheOptions(model: SynthesisModel): boolean {
-  return /^gpt-5\.6(?:$|[-.])/.test(model);
+  return /^gpt-(?:5\.6|6)(?:$|[-.])/.test(model);
 }
 
 export function buildResponsesRequest(settings: PluginSettings, config: InferenceConfig, threadId: string, priorMessages: Message[], tray: TrayItem[], draft: string, linkedContext: LinkedContextState = { sources: [], selections: [] }): ResponsesRequest {
+  if (!isReasoningEffortSupportedByModel(config.model, config.reasoningEffort)) {
+    throw new Error(`Reasoning effort "${config.reasoningEffort}" is not supported by ${config.model}.`);
+  }
   const { currentUser } = buildRequestText(priorMessages, tray, draft, linkedContext);
   const cacheable = settings.promptCachingEnabled && supportsPromptCacheOptions(config.model);
   // Responses only accepts breakpoint-capable input_text blocks on user-role

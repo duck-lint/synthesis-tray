@@ -192,6 +192,32 @@ describe("SQLite persistence", () => {
     expect(makeThread("new after migration")).toMatchObject({ model: "gpt-5.6-luna", reasoningEffort: "high" });
   });
 
+  it("preserves GPT-6 model values when the legacy state migration runs", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `legacy-gpt6-${newId("test")}`;
+    const dbPath = `${name}/conversations.sqlite3`;
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const legacy = new SQL.Database();
+    // These model columns already exist, while the missing current tables make
+    // load() run migrateLegacyState() against the historical model allowlists.
+    legacy.run("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, model TEXT, reasoning_effort TEXT)");
+    legacy.run("CREATE TABLE turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_message_id TEXT NOT NULL, assistant_message_id TEXT NOT NULL, created_at TEXT NOT NULL, model TEXT, reasoning_effort TEXT)");
+    const models = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const;
+    for (const [index, model] of models.entries()) {
+      legacy.run("INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?)", [`thread-${index}`, `Thread ${index}`, "2020-01-01", "2020-01-01", model, "medium"]);
+      legacy.run("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)", [`turn-${index}`, `thread-${index}`, `user-${index}`, `assistant-${index}`, "2020-01-01", model, "high"]);
+    }
+    const exported = legacy.export();
+    adapter.files.set(dbPath, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
+    legacy.close();
+
+    const db = database(adapter, name);
+    const state = await db.load("gpt-5.6-sol", "none");
+    expect(state.threads.map((entry) => entry.model)).toEqual(models);
+    expect(state.turns.map((entry) => entry.model)).toEqual(models);
+    expect(adapter.writeCount).toBe(1);
+  });
+
   it("adds cache-write telemetry to an existing turn_usage table", async () => {
     const adapter = new MemoryVaultAdapter();
     const name = `legacy-usage-${newId("test")}`;

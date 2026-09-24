@@ -6,7 +6,7 @@ import { mergeSettings } from "./state/settings";
 import { SynthesisDatabase } from "./persistence/database";
 import { addTrayItem, cloneLinkedContext, cloneTray, emptyLinkedContext, linkedContextForRequest, removeTrayItem, TrayRevealTarget } from "./state/tray";
 import { afterSuccessfulTurn, clearedActiveTray, recalledPreviousTray } from "./state/turnLifecycle";
-import { LEGACY_DEFAULT_MODEL, LEGACY_DEFAULT_REASONING_EFFORT, isSynthesisModel, migrateLegacyModel, LinkedContextSelection, LinkedContextSource, Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn, SynthesisModel, ReasoningEffort } from "./state/types";
+import { LEGACY_DEFAULT_MODEL, LEGACY_DEFAULT_REASONING_EFFORT, isReasoningEffortSupportedByModel, isSynthesisModel, migrateLegacyModel, LinkedContextSelection, LinkedContextSource, Message, PersistedState, PluginSettings, SourceSnapshot, Thread, TokenBreakdown, TrayItem, Turn, SynthesisModel, ReasoningEffort } from "./state/types";
 import { newId, nowIso } from "./state/ids";
 import { makeMessage, newThreadInferenceDefaults, titleFromFirstMessage } from "./state/thread";
 import { buildResponsesRequest } from "./openai/requestBuilder";
@@ -422,6 +422,7 @@ export default class SynthesisTrayPlugin extends Plugin {
   }
 
   async updateThreadInference(threadId: string, model: SynthesisModel, reasoningEffort: ReasoningEffort): Promise<void> {
+    if (!isReasoningEffortSupportedByModel(model, reasoningEffort)) throw new Error(`Reasoning effort "${reasoningEffort}" is not supported by ${model}.`);
     const existing = this.state.threads.find((candidate) => candidate.id === threadId);
     if (!existing) return;
     const updated = { ...existing, model, reasoningEffort, updatedAt: nowIso() };

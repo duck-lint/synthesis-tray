@@ -100,6 +100,30 @@ describe("explicit request context", () => {
     expect(ordinary).not.toHaveProperty("prompt_cache_options");
   });
 
+  it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const)("uses unchanged explicit cache mechanics for %s", (model) => {
+    const cached = buildResponsesRequest({ ...settings, promptCachingEnabled: true }, { ...config, model }, "thread", [
+      message("user", "Earlier user"), message("assistant", "Earlier answer"), message("user", "Latest user"),
+    ], [], "Question");
+    expect(cached.prompt_cache_key).toMatch(/^synthesis-tray:/);
+    expect(cached.prompt_cache_options).toEqual({ mode: "explicit", ttl: "30m" });
+    expect(cached.input[0]).toEqual({ role: "user", content: [{ type: "input_text", text: "Earlier user", prompt_cache_breakpoint: { mode: "explicit" } }] });
+    expect(cached.input[2]).toEqual({ role: "user", content: [{ type: "input_text", text: "Latest user", prompt_cache_breakpoint: { mode: "explicit" } }] });
+    expect(cached.input[1]).toEqual({ role: "assistant", content: "Earlier answer" });
+    expect(cached.input.at(-1)).toEqual({ role: "user", content: "Question" });
+
+    const ordinary = buildResponsesRequest({ ...settings, promptCachingEnabled: false }, { ...config, model }, "thread", [
+      message("user", "Earlier user"), message("assistant", "Earlier answer"), message("user", "Latest user"),
+    ], [], "Question");
+    expect(ordinary).not.toHaveProperty("prompt_cache_key");
+    expect(ordinary).not.toHaveProperty("prompt_cache_options");
+    expect(JSON.stringify(ordinary.input)).not.toContain("prompt_cache_breakpoint");
+  });
+
+  it("rejects Astra none before constructing a request", () => {
+    expect(() => buildResponsesRequest(settings, { model: "gpt-6-astra", reasoningEffort: "none" }, "thread", [], [], "Question"))
+      .toThrow('Reasoning effort "none" is not supported by gpt-6-astra.');
+  });
+
   it("marks only the latest two supported user boundaries and leaves assistant and tray suffixes unmarked", () => {
     const prior = [
       message("user", "User 1"), message("assistant", "Assistant 1"),

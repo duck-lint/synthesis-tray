@@ -4,6 +4,9 @@ export const MODEL_OPTIONS: Array<{ value: SynthesisModel; label: string }> = [
   { value: "gpt-5.6-sol", label: "Sol" },
   { value: "gpt-5.6-terra", label: "Terra" },
   { value: "gpt-5.6-luna", label: "Luna" },
+  { value: "gpt-6-astra", label: "Astra" },
+  { value: "gpt-6-sol", label: "Sol 6" },
+  { value: "gpt-6-luna", label: "Luna 6" },
 ];
 
 export const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [

@@ -1,7 +1,7 @@
 export type Scope = "highlight" | "heading" | "whole_note" | "conversation";
 export type MessageRole = "user" | "assistant";
 
-export type SynthesisModel = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
+export type SynthesisModel = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna";
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Verbosity = "low" | "medium" | "high";
 
@@ -193,11 +193,17 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 };
 
 export function isSynthesisModel(value: unknown): value is SynthesisModel {
-  return value === "gpt-5.6-sol" || value === "gpt-5.6-terra" || value === "gpt-5.6-luna";
+  return value === "gpt-5.6-sol" || value === "gpt-5.6-terra" || value === "gpt-5.6-luna"
+    || value === "gpt-6-astra" || value === "gpt-6-sol" || value === "gpt-6-luna";
 }
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+}
+
+/** Astra does not accept the otherwise supported `none` reasoning setting. */
+export function isReasoningEffortSupportedByModel(model: SynthesisModel, effort: ReasoningEffort): boolean {
+  return model !== "gpt-6-astra" || effort !== "none";
 }
 
 export function isVerbosity(value: unknown): value is Verbosity {

@@ -152,9 +152,9 @@ export class SynthesisDatabase {
       // Thread inference defines the next request and can be deterministically
       // seeded from the former global setting. Historical turn provenance is a
       // separate claim and stays NULL when the old database did not record it.
-      db.run("UPDATE threads SET model = ? WHERE model IS NULL OR model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')", [migratedModel]);
+      db.run("UPDATE threads SET model = ? WHERE model IS NULL OR model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna')", [migratedModel]);
       db.run("UPDATE threads SET reasoning_effort = ? WHERE reasoning_effort IS NULL OR reasoning_effort NOT IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')", [defaultReasoningEffort]);
-      db.run("UPDATE turns SET model = NULL WHERE model IS NOT NULL AND model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')");
+      db.run("UPDATE turns SET model = NULL WHERE model IS NOT NULL AND model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna')");
       db.run("UPDATE turns SET reasoning_effort = NULL WHERE reasoning_effort IS NOT NULL AND reasoning_effort NOT IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')");
       db.run("COMMIT");
       await this.persist();
