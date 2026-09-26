@@ -88,7 +88,19 @@ hooks:
       --branch master \
       https://github.com/duck-lint/synthesis-tray.git .
 
+    mkdir -p .symphony-substrate/obsidian-1.13.7
+
+    cp -a \
+      "$HOME/.local/share/obsidian/obsidian-1.13.7.asar/." \
+      .symphony-substrate/obsidian-1.13.7/
+
     npm ci
+
+environment:
+  capabilities:
+    - id: obsidian-1.13.7-runtime-source
+      resources:
+        - .symphony-substrate/obsidian-1.13.7
 
 agent:
   max_concurrent_agents: 1
