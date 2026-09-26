@@ -101,6 +101,8 @@ Report the exact revision, commands, results, UAT status, relevant failure cases
 
 A Symphony lifecycle-complete issue is a workflow state, not maintainer acceptance, a commit, a merge, publication, or release readiness. Final disposition belongs to the maintainer under the runtime's actual operational contract.
 
+`.symphony-substrate/obsidian-1.13.7` is inspection substrate, not project source and not acceptance evidence for live behavior. Static inspection can establish implementation shape; it cannot establish that the Search view behaves that way at runtime.
+
 ## 8. Change and publication discipline
 
 Before implementation: inspect the current branch and applicable specification, locate the affected authority/data boundaries, identify regression risks, and establish a plan with measurable acceptance evidence.

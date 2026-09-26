@@ -47,6 +47,10 @@ environment:
               }
             }
 
+    - id: obsidian-1.13.7-runtime-source
+      resources:
+        - .symphony-substrate/obsidian-1.13.7
+
 hooks:
   timeout_ms: 180000
 
@@ -88,19 +92,20 @@ hooks:
       --branch master \
       https://github.com/duck-lint/synthesis-tray.git .
 
+    obsidian_source="$HOME/.local/share/obsidian/obsidian-1.13.7.asar"
+
+    if [ ! -d "$obsidian_source" ]; then
+      echo "ERROR: unpacked Obsidian 1.13.7 substrate not found at $obsidian_source" >&2
+      exit 1
+    fi
+
     mkdir -p .symphony-substrate/obsidian-1.13.7
 
     cp -a \
-      "$HOME/.local/share/obsidian/obsidian-1.13.7.asar/." \
+      "$obsidian_source/." \
       .symphony-substrate/obsidian-1.13.7/
 
     npm ci
-
-environment:
-  capabilities:
-    - id: obsidian-1.13.7-runtime-source
-      resources:
-        - .symphony-substrate/obsidian-1.13.7
 
 agent:
   max_concurrent_agents: 1
