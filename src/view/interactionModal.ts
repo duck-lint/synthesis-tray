@@ -6,10 +6,14 @@ export interface ModalAction<T> {
   cls?: string;
 }
 
+export type ModalCloseRegistration = (close: () => void) => void;
+export type ModalActionValidation<T> = (action: ModalAction<T>) => Promise<boolean>;
+
 /** Small Obsidian-native action modal; it never calls focus or browser dialogs. */
-export function chooseAction<T>(app: App, title: string, message: string, actions: ModalAction<T>[], cancelValue: T): Promise<T> {
+export function chooseAction<T>(app: App, title: string, message: string, actions: ModalAction<T>[], cancelValue: T, registerClose?: ModalCloseRegistration, validateAction?: ModalActionValidation<T>): Promise<T> {
   return new Promise((resolve) => {
     let settled = false;
+    let validationPending = false;
     const finish = (value: T): void => {
       if (settled) return;
       settled = true;
@@ -23,7 +27,19 @@ export function chooseAction<T>(app: App, title: string, message: string, action
         const buttons = this.contentEl.createDiv("synthesis-modal-actions");
         for (const action of actions) {
           const button = buttons.createEl("button", { text: action.label, cls: action.cls });
-          button.onclick = () => finish(action.value);
+          button.onclick = () => {
+            if (!validateAction || action.cls !== "mod-cta") return finish(action.value);
+            if (validationPending || settled) return;
+            validationPending = true;
+            void validateAction(action).then((valid) => {
+              validationPending = false;
+              if (valid) finish(action.value);
+              else finish(cancelValue);
+            }).catch(() => {
+              validationPending = false;
+              finish(cancelValue);
+            });
+          };
         }
       }
 
@@ -34,6 +50,7 @@ export function chooseAction<T>(app: App, title: string, message: string, action
         }
       }
     }(app);
+    registerClose?.(() => finish(cancelValue));
     modal.open();
   });
 }

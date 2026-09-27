@@ -45,7 +45,7 @@ export const LEGACY_DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
 
 export interface CaptureGroup {
   id: string;
-  kind: "folder";
+  kind: "folder" | "search";
   label: string;
 }
 

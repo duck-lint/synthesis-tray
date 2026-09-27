@@ -56,9 +56,9 @@ export function presentationTrayItems(tray: TrayItem[]): Array<{ item: TrayItem;
 
 export type TrayPresentationEntry =
   | { kind: "item"; item: TrayItem; index: number }
-  | { kind: "folder"; group: NonNullable<TrayItem["captureGroup"]>; items: Array<{ item: TrayItem; index: number }> };
+  | { kind: "folder" | "search"; group: NonNullable<TrayItem["captureGroup"]>; items: Array<{ item: TrayItem; index: number }> };
 
-/** Groups only explicit folder captures while keeping the top-level tray newest-first. */
+/** Groups explicit captures while keeping the top-level tray newest-first. */
 export function presentationTrayEntries(tray: TrayItem[]): TrayPresentationEntry[] {
   return presentationTrayEntriesForMatches(tray, tray.map((item, index) => ({ item, index })));
 }
@@ -80,7 +80,7 @@ export function presentationTrayEntriesForMatches(tray: TrayItem[], matches: Arr
       if (matchedIndexes.has(index)) items.push({ item: tray[index], index });
       index += 1;
     }
-    if (items.length > 0) entries.push({ kind: "folder", group, items });
+    if (items.length > 0) entries.push({ kind: group.kind, group, items });
   }
   return entries.reverse();
 }

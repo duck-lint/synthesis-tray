@@ -7,7 +7,7 @@ Synthesis Tray is a desktop-only Obsidian plugin for manually composing an expli
 
 ## Product contract
 
-- The user explicitly adds selections, headings, notes, folders, or conversation snapshots to one shared active tray.
+- The user explicitly adds selections, headings, notes, folders, native Search results, or conversation snapshots to one shared active tray.
 - Each completed turn stores immutable source snapshots. Historical snapshots are distinct from the current vault note.
 - Visible conversation history contains the user messages and assistant responses. The current tray is supplied only to the next request.
 - The tray is shared across threads; model and reasoning settings are thread-scoped.
@@ -28,7 +28,11 @@ Each thread independently selects one of `Sol`, `Terra`, or `Luna` and a reasoni
 
 ## Tray UX
 
-The tray displays newest-first while canonical source identifiers remain stable in insertion order. Folder captures remain grouped, can be collapsed or resized, and use deterministic initial expansion: small groups may open and large groups start collapsed. An explicit user collapse or expansion survives unrelated tray mutations. The approximate local `o200k_base` token estimate is shown by system, conversation, tray, and current-message buckets; stable buckets are cached until their inputs change. Previous successful trays can be recalled without rereading notes.
+The tray displays newest-first while canonical source identifiers remain stable in insertion order. Folder and Search captures remain grouped, can be collapsed or resized, and use deterministic initial expansion: small groups may open and large groups start collapsed. An explicit user collapse or expansion survives unrelated tray mutations. The approximate local `o200k_base` token estimate is shown by system, conversation, tray, and current-message buckets; stable buckets are cached until their inputs change. Previous successful trays can be recalled without rereading notes.
+
+From a native Obsidian Search view, choose **Add all results to tray** from the Search results menu, or run **Add all search results to synthesis** from the command palette. “All” means every distinct, currently resolved result exposed by the native Search view; only Markdown files are eligible, and each is captured as a complete saved whole-note snapshot in canonical path order. The operation shows a preview with exclusions, exact duplicates, new-source count, and approximate serialized token cost before explicit confirmation. It creates one persisted `SEARCH` group labelled with the query; exact duplicates are skipped and never receive the group.
+
+Search capture depends on Obsidian’s internal Search view structures and is fail-closed when the view is loading, stale, ambiguous, unsupported, or incomplete. It is explicit context selection, not autonomous retrieval, and it never sends an OpenAI request during preparation or import. The internal integration is validated against the supported Obsidian version during desktop UAT; static inspection and unit fixtures do not establish complete collapsed/offscreen coverage.
 
 Explicit tray notes with outgoing Obsidian wikilinks expose a compact linked-notes disclosure. Resolved destinations can be selected individually, added in bulk, removed, or promoted to explicit roots; unresolved links remain identity-only. Linked destinations are stored as parent-to-destination selections and are serialized as subordinate, deduplicated context, never as automatic relevance decisions. Linked notes expand one hop from explicit roots only.
 

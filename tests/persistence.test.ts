@@ -127,6 +127,98 @@ describe("SQLite persistence", () => {
     expect(state.sourceSnapshots[0].captureGroup).toEqual(group);
   });
 
+  it("persists search capture provenance without coercing it to a folder", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const db = database(adapter, `search-group-${newId("test")}`);
+    const currentThread = thread();
+    const group = { id: "search-group", kind: "search" as const, label: "tag:note" };
+    const grouped = { ...tray("A.md", "A"), captureGroup: group };
+    await db.setMeta([grouped], [], currentThread.id);
+    await db.putThread(currentThread);
+    const turnId = "search-turn";
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "search-user", assistantMessageId: "search-assistant", createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
+    await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [{ id: "search-source", turnId, sourceIndex: 1, sourcePath: grouped.sourcePath, scope: grouped.scope, headingPath: null, contentSnapshot: grouped.contentSnapshot, captureGroup: group }], [grouped]);
+    const state = await db.load();
+    expect(state.previousTray[0].captureGroup).toEqual(group);
+    expect(state.sourceSnapshots[0].captureGroup).toEqual(group);
+  });
+
+  it("normalizes grouped rows from a pre-search schema as historical folders", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `legacy-folder-schema-${newId("test")}`;
+    const path = `${name}/conversations.sqlite3`;
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const legacy = new SQL.Database();
+    legacy.run("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+    legacy.run("CREATE TABLE turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_message_id TEXT NOT NULL, assistant_message_id TEXT NOT NULL, created_at TEXT NOT NULL)");
+    legacy.run("CREATE TABLE source_snapshots (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, source_index INTEGER NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, capture_group_id TEXT, capture_group_label TEXT)");
+    legacy.run("CREATE TABLE tray_items (tray_name TEXT NOT NULL, ordinal INTEGER NOT NULL, id TEXT NOT NULL, source_path TEXT NOT NULL, scope TEXT NOT NULL, heading_path_json TEXT, content_snapshot TEXT NOT NULL, added_at TEXT NOT NULL, capture_group_id TEXT, capture_group_label TEXT, PRIMARY KEY (tray_name, id))");
+    legacy.run("INSERT INTO threads VALUES (?, ?, ?, ?)", ["legacy-thread", "Legacy", "2020-01-01", "2020-01-01"]);
+    legacy.run("INSERT INTO turns VALUES (?, ?, ?, ?, ?)", ["legacy-turn", "legacy-thread", "legacy-user", "legacy-assistant", "2020-01-01"]);
+    legacy.run("INSERT INTO source_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", ["legacy-source", "legacy-turn", 1, "Research/A.md", "whole_note", null, "A snapshot", "folder-group", "Research"]);
+    legacy.run("INSERT INTO tray_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ["active", 1, "legacy-tray", "Research/A.md", "whole_note", null, "A snapshot", "2020-01-01", "folder-group", "Research"]);
+    const exported = legacy.export();
+    adapter.files.set(path, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
+    legacy.close();
+
+    const state = await database(adapter, name).load();
+    const expectedGroup = { id: "folder-group", kind: "folder" as const, label: "Research" };
+    expect(state.activeTray[0]).toMatchObject({ id: "legacy-tray", sourcePath: "Research/A.md", contentSnapshot: "A snapshot", captureGroup: expectedGroup });
+    expect(state.sourceSnapshots[0]).toMatchObject({ id: "legacy-source", sourcePath: "Research/A.md", contentSnapshot: "A snapshot", captureGroup: expectedGroup });
+    const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(path)));
+    expect(inspected.exec("SELECT capture_group_kind FROM tray_items")[0].values).toEqual([["folder"]]);
+    expect(inspected.exec("SELECT capture_group_kind FROM source_snapshots")[0].values).toEqual([["folder"]]);
+    inspected.close();
+  });
+
+  it("normalizes present-but-null grouped kinds even when schema is otherwise clean", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `legacy-folder-null-kind-${newId("test")}`;
+    const db = database(adapter, name);
+    const currentThread = thread("legacy-thread");
+    const group = { id: "folder-group", kind: "folder" as const, label: "Research" };
+    const grouped = { ...tray("Research/A.md", "A snapshot"), captureGroup: group };
+    await db.setMeta([grouped], [], currentThread.id);
+    await db.putThread(currentThread);
+    const turnId = "legacy-turn";
+    const turn: Turn = { id: turnId, threadId: currentThread.id, userMessageId: "legacy-user", assistantMessageId: "legacy-assistant", createdAt: nowIso(), model: currentThread.model, reasoningEffort: currentThread.reasoningEffort };
+    await db.commitTurn(currentThread, { id: turn.userMessageId, threadId: currentThread.id, turnId, role: "user", content: "question", createdAt: nowIso() }, { id: turn.assistantMessageId, threadId: currentThread.id, turnId, role: "assistant", content: "answer", createdAt: nowIso() }, turn, [{ id: "legacy-source", turnId, sourceIndex: 1, sourcePath: grouped.sourcePath, scope: grouped.scope, headingPath: null, contentSnapshot: grouped.contentSnapshot, captureGroup: group }], [grouped]);
+    await db.close();
+
+    const path = `${name}/conversations.sqlite3`;
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const image = new SQL.Database(new Uint8Array(await adapter.readBinary(path)));
+    image.run("UPDATE tray_items SET capture_group_kind = NULL");
+    image.run("UPDATE source_snapshots SET capture_group_kind = NULL");
+    const exported = image.export();
+    image.close();
+    adapter.files.set(path, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
+
+    const reloaded = await database(adapter, name).load();
+    expect(reloaded.previousTray[0].captureGroup).toEqual(group);
+    expect(reloaded.sourceSnapshots[0].captureGroup).toEqual(group);
+    const inspected = new SQL.Database(new Uint8Array(await adapter.readBinary(path)));
+    expect(inspected.exec("SELECT capture_group_kind FROM tray_items")[0].values).toEqual([["folder"]]);
+    expect(inspected.exec("SELECT capture_group_kind FROM source_snapshots")[0].values).toEqual([["folder"]]);
+    inspected.close();
+  });
+
+  it("fails closed on an unsupported persisted group kind", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const name = `malformed-group-${newId("test")}`;
+    const path = `${name}/conversations.sqlite3`;
+    const db = database(adapter, name);
+    await db.setMeta([{ ...tray("A.md", "A"), captureGroup: { id: "bad-group", kind: "folder", label: "Folder" } }], [], "thread-1");
+    await db.close();
+    const SQL = await initSqlJs({ locateFile: () => wasmPath });
+    const image = new SQL.Database(new Uint8Array(await adapter.readBinary(path)));
+    image.run("UPDATE tray_items SET capture_group_kind = ?", ["unsupported"]);
+    const exported = image.export();
+    image.close();
+    adapter.files.set(path, exported.buffer.slice(exported.byteOffset, exported.byteOffset + exported.byteLength) as ArrayBuffer);
+    await expect(database(adapter, name).load()).rejects.toThrow("Unsupported persisted capture group kind");
+  });
+
   it("writes a standard SQLite file with recognizable records and no API secret", async () => {
     const adapter = new MemoryVaultAdapter();
     const dbPath = `inspect-${newId("test")}/conversations.sqlite3`;

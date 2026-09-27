@@ -55,12 +55,39 @@ function asTrayScope(value: unknown): TrayItem["scope"] {
   throw new Error(`Invalid persisted tray scope: ${String(value)}`);
 }
 
+function parseCaptureGroup(row: Record<string, unknown>): TrayItem["captureGroup"] {
+  const id = row.capture_group_id;
+  const kind = row.capture_group_kind;
+  const label = row.capture_group_label;
+  if (id == null) {
+    if (kind != null || label != null) throw new Error("Malformed persisted capture group metadata without an id");
+    return undefined;
+  }
+  if (typeof id !== "string" || id.length === 0) throw new Error("Malformed persisted capture group id");
+  if (kind !== "folder" && kind !== "search") throw new Error(`Unsupported persisted capture group kind: ${String(kind)}`);
+  if (typeof label !== "string" || label.length === 0) throw new Error("Malformed persisted capture group label");
+  return { id, kind, label };
+}
+
+function assertConsistentCaptureGroups(rows: Array<Record<string, unknown>>): void {
+  const groups = new Map<string, string>();
+  for (const row of rows) {
+    const group = parseCaptureGroup(row);
+    if (!group) continue;
+    const descriptor = `${group.kind}\u0000${group.label}`;
+    const prior = groups.get(group.id);
+    if (prior !== undefined && prior !== descriptor) throw new Error(`Inconsistent persisted capture group metadata for ${group.id}`);
+    groups.set(group.id, descriptor);
+  }
+}
+
 function parseTrayRows(rows: Array<Record<string, unknown>>): TrayItem[] {
+  assertConsistentCaptureGroups(rows);
   return rows.sort((a, b) => asNumber(a.ordinal) - asNumber(b.ordinal)).map((row) => ({
     id: asString(row.id), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope),
     headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null,
     contentSnapshot: asString(row.content_snapshot), addedAt: asString(row.added_at),
-    ...(row.capture_group_id == null ? {} : { captureGroup: { id: asString(row.capture_group_id), kind: "folder" as const, label: asString(row.capture_group_label) } }),
+    ...(parseCaptureGroup(row) ? { captureGroup: parseCaptureGroup(row) } : {}),
     ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }),
     ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }),
   }));
@@ -144,7 +171,10 @@ export class SynthesisDatabase {
     const turnRows = rowObjects(db.exec("SELECT model, reasoning_effort FROM turns"));
     const needsThreadMigration = threadRows.some((row) => !isSynthesisModel(row.model) || !isReasoningEffort(row.reasoning_effort));
     const needsTurnCleanup = turnRows.some((row) => row.model != null && !isSynthesisModel(row.model) || row.reasoning_effort != null && !isReasoningEffort(row.reasoning_effort));
-    if (!this.schemaDirty && !needsThreadMigration && !needsTurnCleanup) return;
+    const hasLegacySourceGroups = rowObjects(db.exec("SELECT 1 FROM source_snapshots WHERE capture_group_id IS NOT NULL AND capture_group_kind IS NULL LIMIT 1")).length > 0;
+    const hasLegacyTrayGroups = rowObjects(db.exec("SELECT 1 FROM tray_items WHERE capture_group_id IS NOT NULL AND capture_group_kind IS NULL LIMIT 1")).length > 0;
+    const needsLegacyCaptureGroupMigration = hasLegacySourceGroups || hasLegacyTrayGroups;
+    if (!this.schemaDirty && !needsThreadMigration && !needsTurnCleanup && !needsLegacyCaptureGroupMigration) return;
 
     const knownGoodImage = new Uint8Array(db.export());
     db.run("BEGIN");
@@ -156,6 +186,11 @@ export class SynthesisDatabase {
       db.run("UPDATE threads SET reasoning_effort = ? WHERE reasoning_effort IS NULL OR reasoning_effort NOT IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')", [defaultReasoningEffort]);
       db.run("UPDATE turns SET model = NULL WHERE model IS NOT NULL AND model NOT IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna')");
       db.run("UPDATE turns SET reasoning_effort = NULL WHERE reasoning_effort IS NOT NULL AND reasoning_effort NOT IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')");
+      // Before capture_group_kind was introduced, grouped rows were folder
+      // captures. Normalize only that established row-local shape; malformed
+      // or unsupported non-null metadata remains fail-closed in the parser.
+      db.run("UPDATE source_snapshots SET capture_group_kind = 'folder' WHERE capture_group_id IS NOT NULL AND capture_group_kind IS NULL");
+      db.run("UPDATE tray_items SET capture_group_kind = 'folder' WHERE capture_group_id IS NOT NULL AND capture_group_kind IS NULL");
       db.run("COMMIT");
       await this.persist();
       this.schemaDirty = false;
@@ -215,7 +250,9 @@ export class SynthesisDatabase {
       }
       return { turnId: asString(row.turn_id), inputTokens: row.input_tokens == null ? null : asNumber(row.input_tokens), outputTokens: row.output_tokens == null ? null : asNumber(row.output_tokens), reasoningTokens: row.reasoning_tokens == null ? recoveredReasoning : asNumber(row.reasoning_tokens), totalTokens: row.total_tokens == null ? null : asNumber(row.total_tokens), cachedInputTokens: row.cached_input_tokens == null ? null : asNumber(row.cached_input_tokens), cacheWriteTokens: row.cache_write_tokens == null ? null : asNumber(row.cache_write_tokens), usageJson };
     });
-    const sourceSnapshots = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title, provenance_kind, parent_source_ids_json, relationship, destination_source_id, outgoing_wikilinks_json FROM source_snapshots")).map((row): SourceSnapshot => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot), ...(row.capture_group_id == null ? {} : { captureGroup: { id: asString(row.capture_group_id), kind: "folder" as const, label: asString(row.capture_group_label) } }), ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }), ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }), ...(row.provenance_kind === "explicit" || row.provenance_kind === "linked" ? { provenanceKind: row.provenance_kind } : {}), ...(row.parent_source_ids_json ? { parentSourceIds: JSON.parse(asString(row.parent_source_ids_json)) as string[] } : {}), ...(row.relationship === "outgoing_wikilink" ? { relationship: "outgoing_wikilink" as const } : {}), ...(row.destination_source_id == null ? {} : { destinationSourceId: asString(row.destination_source_id) }), ...(row.outgoing_wikilinks_json ? { outgoingWikilinks: JSON.parse(asString(row.outgoing_wikilinks_json)) as WikilinkDestination[] } : {}) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
+    const sourceRows = rowObjects(db.exec("SELECT id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title, provenance_kind, parent_source_ids_json, relationship, destination_source_id, outgoing_wikilinks_json FROM source_snapshots"));
+    assertConsistentCaptureGroups(sourceRows);
+    const sourceSnapshots = sourceRows.map((row): SourceSnapshot => ({ id: asString(row.id), turnId: asString(row.turn_id), sourceIndex: asNumber(row.source_index), sourcePath: asString(row.source_path), scope: asTrayScope(row.scope), headingPath: row.heading_path_json ? JSON.parse(asString(row.heading_path_json)) as string[] : null, contentSnapshot: asString(row.content_snapshot), ...(parseCaptureGroup(row) ? { captureGroup: parseCaptureGroup(row) } : {}), ...(row.conversation_thread_id == null ? {} : { conversationThreadId: asString(row.conversation_thread_id) }), ...(row.conversation_title == null ? {} : { conversationTitle: asString(row.conversation_title) }), ...(row.provenance_kind === "explicit" || row.provenance_kind === "linked" ? { provenanceKind: row.provenance_kind } : {}), ...(row.parent_source_ids_json ? { parentSourceIds: JSON.parse(asString(row.parent_source_ids_json)) as string[] } : {}), ...(row.relationship === "outgoing_wikilink" ? { relationship: "outgoing_wikilink" as const } : {}), ...(row.destination_source_id == null ? {} : { destinationSourceId: asString(row.destination_source_id) }), ...(row.outgoing_wikilinks_json ? { outgoingWikilinks: JSON.parse(asString(row.outgoing_wikilinks_json)) as WikilinkDestination[] } : {}) })).sort((a, b) => (turnOrder.get(a.turnId) ?? Number.MAX_SAFE_INTEGER) - (turnOrder.get(b.turnId) ?? Number.MAX_SAFE_INTEGER) || a.sourceIndex - b.sourceIndex);
     const trayRows = rowObjects(db.exec("SELECT tray_name, ordinal, id, source_path, scope, heading_path_json, content_snapshot, added_at, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title FROM tray_items ORDER BY tray_name, ordinal"));
     const activeTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "active"));
     const previousTray = parseTrayRows(trayRows.filter((row) => row.tray_name === "previous"));
@@ -227,7 +264,7 @@ export class SynthesisDatabase {
     await this.mutate((db) => { this.replaceTray(db, "active", activeTray); this.replaceTray(db, "previous", previousTray); this.replaceLinkedContext(db, "active", activeLinkedContext); this.replaceLinkedContext(db, "previous", previousLinkedContext); this.putMeta(db, "activeThreadId", activeThreadId); });
   }
 
-  async commitTurn(thread: Thread, user: Message, assistant: Message, turn: Turn, sources: SourceSnapshot[], tray: TrayItem[], usage?: TurnUsage, linkedContext: LinkedContextState = { sources: [], selections: [] }): Promise<void> {
+  async commitTurn(thread: Thread, user: Message, assistant: Message, turn: Turn, sources: SourceSnapshot[], tray: TrayItem[], usage?: TurnUsage, linkedContext: LinkedContextState = { sources: [], selections: [] }, activeTray: TrayItem[] = [], activeLinkedContext: LinkedContextState = { sources: [], selections: [] }, activeThreadId?: string | null): Promise<void> {
     await this.mutate((db) => {
       db.run("INSERT OR REPLACE INTO threads (id, title, created_at, updated_at, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?)", [thread.id, thread.title, thread.createdAt, thread.updatedAt, thread.model, thread.reasoningEffort]);
       db.run("INSERT INTO messages (id, thread_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)", [user.id, user.threadId, user.turnId, user.role, user.content, user.createdAt]);
@@ -235,7 +272,8 @@ export class SynthesisDatabase {
       db.run("INSERT INTO turns (id, thread_id, user_message_id, assistant_message_id, created_at, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?)", [turn.id, turn.threadId, turn.userMessageId, turn.assistantMessageId, turn.createdAt, turn.model, turn.reasoningEffort]);
       if (usage) db.run("INSERT INTO turn_usage (turn_id, input_tokens, output_tokens, reasoning_tokens, total_tokens, cached_input_tokens, cache_write_tokens, usage_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [usage.turnId, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.totalTokens, usage.cachedInputTokens, usage.cacheWriteTokens, usage.usageJson]);
       for (const source of sources) db.run("INSERT INTO source_snapshots (id, turn_id, source_index, source_path, scope, heading_path_json, content_snapshot, capture_group_id, capture_group_kind, capture_group_label, conversation_thread_id, conversation_title, provenance_kind, parent_source_ids_json, relationship, destination_source_id, outgoing_wikilinks_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [source.id, source.turnId, source.sourceIndex, source.sourcePath, source.scope, source.headingPath ? JSON.stringify(source.headingPath) : null, source.contentSnapshot, source.captureGroup?.id ?? null, source.captureGroup?.kind ?? null, source.captureGroup?.label ?? null, source.conversationThreadId ?? null, source.conversationTitle ?? null, source.provenanceKind ?? null, source.parentSourceIds ? JSON.stringify(source.parentSourceIds) : null, source.relationship ?? null, source.destinationSourceId ?? null, source.outgoingWikilinks ? JSON.stringify(source.outgoingWikilinks) : null]);
-      this.replaceTray(db, "previous", tray); this.replaceTray(db, "active", []); this.replaceLinkedContext(db, "previous", linkedContext); this.replaceLinkedContext(db, "active", { sources: [], selections: [] });
+      this.replaceTray(db, "previous", tray); this.replaceTray(db, "active", activeTray); this.replaceLinkedContext(db, "previous", linkedContext); this.replaceLinkedContext(db, "active", activeLinkedContext);
+      if (activeThreadId !== undefined) this.putMeta(db, "activeThreadId", activeThreadId);
     });
   }
 

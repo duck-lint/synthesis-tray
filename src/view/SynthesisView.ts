@@ -37,6 +37,8 @@ export class SynthesisView extends ItemView {
   private tokenBreakdownElement: HTMLElement | null = null;
   private streaming = false;
   private streamedAssistant = "";
+  private mounted = false;
+  private requestGeneration = 0;
   private pendingAssistantScrollTurnId: string | null = null;
   private pendingTrayRevealTarget: TrayRevealTarget | null = null;
   private trayCollapsed = false;
@@ -58,10 +60,15 @@ export class SynthesisView extends ItemView {
 
   override async onOpen(): Promise<void> {
     await this.plugin.ready();
+    if (!this.plugin.isSendLifecycleLive()) return;
+    this.mounted = true;
+    this.requestGeneration += 1;
     this.render();
   }
 
   override async onClose(): Promise<void> {
+    this.mounted = false;
+    this.requestGeneration += 1;
     this.draftElement = null;
     this.conversationElement = null;
     this.trayElement = null;
@@ -331,7 +338,7 @@ export class SynthesisView extends ItemView {
     const revealItem = entry.items.some(({ item }) => trayItemIsRevealTarget(item.id, this.pendingTrayRevealTarget));
     const searching = this.traySearchQuery.trim().length > 0;
     groupDetails.open = searching || captureGroupShouldOpen(entry.group.id, entry.items.length, this.captureGroupPreferences, this.pendingTrayRevealTarget);
-    // A folder action reveals its group header. Large groups stay collapsed so
+    // A grouped action reveals its group header. Large groups stay collapsed so
     // the reveal never lands on the final child of a hundreds-item capture.
     if (!searching && revealGroup) groupDetails.open = entry.items.length <= 20;
     if (revealItem) groupDetails.open = true;
@@ -340,7 +347,7 @@ export class SynthesisView extends ItemView {
       if (!searching) this.captureGroupPreferences.set(entry.group.id, groupDetails.open);
     };
     const summary = groupDetails.createEl("summary", { cls: "synthesis-tray-group-summary" });
-    summary.createEl("span", { text: entry.group.label, cls: "synthesis-tray-path" });
+    summary.createEl("span", { text: `${entry.group.kind === "search" ? "SEARCH" : "FOLDER"} · ${entry.group.label}`, cls: "synthesis-tray-path" });
     summary.createEl("span", { text: `${entry.items.length} notes`, cls: "synthesis-tray-scope" });
     for (const { item, index } of entry.items) this.renderTrayItem(groupDetails, item, index);
     if (revealGroup) window.setTimeout(() => summary.scrollIntoView({ block: "nearest" }), 0);
@@ -490,10 +497,12 @@ export class SynthesisView extends ItemView {
     if (!draft) return;
     this.streaming = true;
     this.streamedAssistant = "";
+    const requestGeneration = ++this.requestGeneration;
     this.render();
     let completedTurnId: string | null = null;
     try {
       const completedTurn = await this.plugin.send(draft, (delta) => {
+        if (!this.mounted || requestGeneration !== this.requestGeneration || !this.plugin.isSendLifecycleLive()) return;
         this.streamedAssistant += delta;
         if (this.conversationElement) {
           this.conversationElement.empty();
@@ -506,11 +515,13 @@ export class SynthesisView extends ItemView {
         }
       });
       completedTurnId = completedTurn?.id ?? null;
-      this.draft = "";
+      // A skipped Send commit returns null; preserve the user's draft unless
+      // the turn was actually durably committed.
+      if (completedTurn) this.draft = "";
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) new Notice(error instanceof Error ? error.message : "Synthesis request failed.");
     } finally {
-      this.finishRequest(completedTurnId);
+      this.finishRequest(completedTurnId, requestGeneration);
     }
   }
 
@@ -540,7 +551,8 @@ export class SynthesisView extends ItemView {
     }
   }
 
-  private finishRequest(completedTurnId: string | null): void {
+  private finishRequest(completedTurnId: string | null, requestGeneration: number): void {
+    if (!this.mounted || requestGeneration !== this.requestGeneration || !this.plugin.isSendLifecycleLive()) return;
     this.streaming = false;
     this.streamedAssistant = "";
     this.pendingAssistantScrollTurnId = completedTurnId;
